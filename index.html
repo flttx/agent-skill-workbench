@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Agent Workbench</title>
+    <script>
+      (() => {
+        const validThemes = new Set([
+          "pillars",
+          "black-hole",
+          "starweaver",
+          "cosmic-cliffs",
+        ]);
+        let theme = "pillars";
+        try {
+          const storedTheme = localStorage.getItem("agent-workbench-theme");
+          if (validThemes.has(storedTheme)) theme = storedTheme;
+        } catch {
+          // The application can still start with the default theme.
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+  </head>
+  <body>
+    <!--
+    THESIS: 将本机 Skill 工作台塑造成低照度黑曜石控制台，以流光标记当前上下文，而非用装饰替代操作。
+    OWN-WORLD: #0a090e 黑曜石底、#13111a 玻璃面板、星云紫主操作、赛博青数据流、镜面顶光与 HUD 微网格。
+    STORY: 用户进入后先识别当前 Skill 空间，再通过同步、搜索、选择和拓扑关系完成管理与追踪。
+    FIRST VIEWPORT: 左侧固定导航，顶部标题与同步动作，主体以 Skill 列表/详情双栏承载主要工作；聚光灯只跟随悬停面板。
+    FORM: 既有桌面工作台双栏操作布局，保留产品现有导航、数据和 Tauri 原生交互。
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+    -->
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

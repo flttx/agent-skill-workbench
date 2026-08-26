@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "允许主窗口使用用户触发的本地目录选择器。",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}
