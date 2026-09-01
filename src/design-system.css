@@ -283,6 +283,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   padding: 0 11px;
   cursor: pointer;
   font-size: 13px;
+  line-height: 1.2;
+}
+.select-trigger [data-radix-select-value],
+.select-item [data-radix-select-item-text] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .select-trigger:hover, .select-trigger[data-state="open"] {
   border-color: var(--accent-strong);

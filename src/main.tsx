@@ -697,30 +697,67 @@ function EnhancedSkillsPane({
                       配置更新命令
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="button button-ghost"
+                    onClick={openCopyPanel}
+                    disabled={!copyTargetsForVariant.length || copying}
+                    aria-expanded={copyPanelOpen}
+                    aria-controls="skill-copy-panel"
+                  >
+                    复制到其他 Agent
+                  </button>
               </div>
               {copyPanelOpen && (
-                <section className="skill-copy-panel">
+                <section
+                  id="skill-copy-panel"
+                  className="skill-copy-panel"
+                  aria-labelledby="skill-copy-title"
+                >
                   <div className="skill-copy-panel-heading">
                     <div>
                       <span className="card-kicker">COPY SKILL</span>
-                      <b>复制完整 Skill 目录</b>
+                      <b id="skill-copy-title">复制完整 Skill 目录</b>
                     </div>
-                    <button className="text-button" onClick={() => setCopyPanelOpen(false)}>关闭</button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() => setCopyPanelOpen(false)}
+                    >
+                      关闭
+                    </button>
                   </div>
-                  <p>包含 SKILL.md、scripts、references 和 assets。目标目录已有同名 Skill 时会先生成备份。</p>
+                  <p className="skill-copy-panel-description">
+                    包含 SKILL.md、scripts、references 和 assets。目标目录已有同名 Skill 时会先生成备份。
+                  </p>
                   <div className="skill-copy-controls">
-                    <SelectControl
-                      value={copyTargetAgent}
-                      values={copyTargetsForVariant.map((target) => target.agent)}
-                      labels={Object.fromEntries(copyTargetsForVariant.map((target) => [target.agent, `${target.agent} · ${target.path}`]))}
-                      onChange={setCopyTargetAgent}
-                    />
-                    <button className="button button-primary" disabled={!copyTargetAgent || copying} onClick={() => startCopy(selectedVariant)}>
+                    <label className="skill-copy-field">
+                      <span>目标 Agent</span>
+                      <SelectControl
+                        value={copyTargetAgent}
+                        values={copyTargetsForVariant.map((target) => target.agent)}
+                        labels={Object.fromEntries(copyTargetsForVariant.map((target) => [target.agent, `${target.agent} · ${target.path}`]))}
+                        ariaLabel="目标 Agent"
+                        onChange={setCopyTargetAgent}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      disabled={!copyTargetAgent || copying}
+                      onClick={() => startCopy(selectedVariant)}
+                    >
                       {copying ? "复制中…" : "确认复制"}
                     </button>
                   </div>
                   {copyError && <p className="form-error">{copyError}</p>}
-                  {copyResult && <div className="skill-copy-result"><span className="live">已复制 {copyResult.copied_files} 个文件</span><small>目标：{copyResult.target_path}</small>{copyResult.backup_path && <small>备份：{copyResult.backup_path}</small>}</div>}
+                  {copyResult && (
+                    <div className="skill-copy-result" role="status" aria-live="polite">
+                      <span className="live">已复制 {copyResult.copied_files} 个文件</span>
+                      <small>目标：{copyResult.target_path}</small>
+                      {copyResult.backup_path && <small>备份：{copyResult.backup_path}</small>}
+                    </div>
+                  )}
                 </section>
               )}
               <SkillMetadata group={selected} variant={selectedVariant} />
@@ -757,9 +794,6 @@ function EnhancedSkillsPane({
                     {card ? <UsageCard card={card} change={(next) => { setCard(next); setDirty(true); }} /> : <div className="skill-card-empty"><p>这个版本还没有使用卡片。</p><button className="button button-secondary" onClick={() => { setCard(emptyCard(selectedVariant.id)); setDirty(true); }}>创建使用卡片</button></div>}
                   </section>
                 )}
-                <div className="skill-secondary-actions">
-                  <button className="button button-ghost" onClick={openCopyPanel} disabled={!copyTargetsForVariant.length || copying}>复制到其他 Agent</button>
-                </div>
               </details>
               {(updateRun || updateEvents.length > 0 || updateError) && (
                 <UpdateConsole
@@ -4792,16 +4826,18 @@ function SelectControl({
   value,
   values,
   labels,
+  ariaLabel = "选择条件",
   onChange,
 }: {
   value: string;
   values: Iterable<string>;
   labels?: Record<string, string>;
+  ariaLabel?: string;
   onChange: (value: string) => void;
 }) {
   return (
     <Select.Root value={value} onValueChange={onChange}>
-      <Select.Trigger className="select-trigger" aria-label="选择条件">
+      <Select.Trigger className="select-trigger" aria-label={ariaLabel}>
         <Select.Value>{labels?.[value] ?? value}</Select.Value>
         <Select.Icon className="select-chevron">
           <ChevronDown aria-hidden="true" />

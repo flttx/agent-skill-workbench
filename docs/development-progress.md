@@ -283,3 +283,19 @@
 - 验证：`git status --short --branch` 确认忽略规则生效；未执行代码构建，因本次仅修改仓库配置。
 - 已知问题：仓库当前仍没有初始提交，现有项目文件会继续显示为未跟踪，需后续人工确认后再提交。
 - 下一步：检查未跟踪文件清单，确认需要纳入版本控制的项目文件后创建初始提交。
+
+### 2026-09-01 · 复制到其他 Agent 交互布局修复
+- 目标：修复“复制到其他 Agent”触发按钮位于详情底部、点击后复制表单跳到详情头部且样式散乱的问题。
+- 完成：将复制入口移动到 Skill 详情动作区，使入口与优化、更新、打开目录保持同一操作层级；复制面板紧随动作区渲染；补齐目标 Agent 标签、确认按钮、关闭动作、成功结果和错误状态的布局与响应式样式；增加 `aria-expanded`、`aria-controls` 和状态播报。
+- 影响文件：`src/main.tsx`、`src/styles.css`、`docs/development-progress.md`。
+- 验证：`pnpm check` 通过；`pnpm build` 通过；Impeccable detector 返回 2 条项目既有提示（折叠箭头侧边强调线、背景网格），未发现本轮新增问题；已检查桌面双栏与 760px 以下单列规则的 DOM/CSS 顺序。
+- 已知问题：生产构建仍有既有 JavaScript chunk 超过 500 kB 提示；尚未在真实 Tauri WebView 中完成截图级点击验收。
+- 下一步：在真实 Tauri 窗口打开 Skill 详情，确认复制入口、表单展开位置、目标选择和复制成功反馈的最终视觉表现。
+
+### 2026-09-01 · 复制面板控件样式细化
+- 目标：根据最新截图修复复制面板关闭按钮的浏览器默认灰底，以及目标 Agent 选择器的长文本折行和垂直对齐问题。
+- 完成：关闭按钮改为透明主题文本按钮并补齐 hover/focus 状态；选择器保留目标路径信息但将已选值限制为单行省略；下拉项同步处理长路径截断；目标字段使用明确的可见标签和无障碍名称。
+- 影响文件：`src/main.tsx`、`src/styles.css`、`src/design-system.css`、`docs/development-progress.md`。
+- 验证：`pnpm check` 通过；`pnpm build` 通过；`git diff --check` 通过；Impeccable detector 返回 2 条项目既有提示，未发现本轮新增问题；已针对截图中的窄面板宽度检查关闭按钮、标签、选择器和确认按钮的布局规则。
+- 已知问题：生产构建仍有既有 JavaScript chunk 超过 500 kB 提示；最终点击验收仍需在真实 Tauri WebView 中完成。
+- 下一步：在真实 Tauri 窗口确认关闭按钮 hover/focus、选择器展开和复制成功状态的最终视觉表现。

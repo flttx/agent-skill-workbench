@@ -1221,6 +1221,91 @@ nav button { position: relative; overflow: hidden; }
 }
 .detail-action-row .button { min-height: 34px; }
 
+.skill-copy-panel {
+  display: grid;
+  gap: 14px;
+  margin: -4px 0 18px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-top-color: var(--border-specular);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, .72);
+}
+.skill-copy-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.skill-copy-panel-heading > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.skill-copy-panel-heading .card-kicker { margin: 0; }
+.skill-copy-panel-heading b {
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.25;
+}
+.skill-copy-panel-heading > .text-button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.skill-copy-panel-heading > .text-button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.skill-copy-panel-description {
+  margin: -2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.skill-copy-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+.skill-copy-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.skill-copy-field > span {
+  color: var(--muted);
+  font: 10px "DM Mono", monospace;
+}
+.skill-copy-field .select-trigger {
+  width: 100%;
+  min-width: 0;
+}
+.skill-copy-controls > .button { min-height: 40px; }
+.skill-copy-panel .form-error { margin: -2px 0 0; }
+.skill-copy-result {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-subtle);
+}
+.skill-copy-result small {
+  color: var(--muted);
+  font: 10px/1.5 "DM Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
 .skills-library-grid .skill-group-detail {
   min-width: 0;
   max-height: none;
@@ -1409,6 +1494,8 @@ nav button { position: relative; overflow: hidden; }
   .skill-section-heading { align-items: flex-start; }
   .source-view-toggle { width: 100%; }
   .source-view-toggle button { flex: 1 1 0; }
+  .skill-copy-controls { grid-template-columns: 1fr; }
+  .skill-copy-controls > .button { width: 100%; }
   .skill-history-heading { align-items: stretch; flex-direction: column; gap: 14px; }
   .skill-history-heading > .button { align-self: flex-start; }
   .skill-history-panel { padding: 16px; }
