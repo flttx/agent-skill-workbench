@@ -17,7 +17,7 @@ mod cursor;
 
 const MAX_INDEXED_BYTES: u64 = 1_000_000;
 const MAX_EXCERPT_CHARS: usize = 900;
-const DB_SCHEMA_VERSION: i64 = 4;
+const DB_SCHEMA_VERSION: i64 = 6;
 struct Db(Mutex<Connection>);
 
 #[derive(Serialize, Clone)]
@@ -215,6 +215,7 @@ struct Workspace {
     description: String,
     path: Option<String>,
     color: String,
+    pinned: bool,
     updated_at: String,
     last_opened_at: Option<String>,
     inbox_count: i64,
@@ -228,6 +229,87 @@ struct WorkspaceInput {
     description: String,
     path: Option<String>,
     color: String,
+    #[serde(default)]
+    pinned: Option<bool>,
+}
+#[derive(Serialize, Clone)]
+struct ProjectAvailability {
+    state: String,
+    detail: String,
+}
+#[derive(Serialize, Deserialize, Clone)]
+struct ProgressSource {
+    kind: String,
+    label: String,
+    detail: String,
+    at: String,
+}
+#[derive(Serialize, Clone)]
+struct ProgressVersion {
+    id: i64,
+    project_id: i64,
+    version: i64,
+    current_stage: String,
+    last_completed: String,
+    next_action: String,
+    blockers: String,
+    validation: String,
+    workspace_changes: String,
+    source_refs: Vec<ProgressSource>,
+    user_confirmed_fields: Vec<String>,
+    generated_at: String,
+    created_at: String,
+}
+#[derive(Serialize, Clone)]
+struct ProgressDraft {
+    project_id: i64,
+    project_title: String,
+    current_stage: String,
+    last_completed: String,
+    next_action: String,
+    blockers: String,
+    validation: String,
+    workspace_changes: String,
+    source_refs: Vec<ProgressSource>,
+    preserved_fields: Vec<String>,
+    conflicts: Vec<ProgressConflict>,
+    generated_at: String,
+}
+#[derive(Serialize, Clone)]
+struct ProgressConflict {
+    field: String,
+    confirmed_value: String,
+    suggested_value: String,
+}
+#[derive(Deserialize)]
+struct ProgressVersionInput {
+    project_id: i64,
+    current_stage: String,
+    last_completed: String,
+    next_action: String,
+    blockers: String,
+    validation: String,
+    workspace_changes: String,
+    source_refs: Vec<ProgressSource>,
+    user_confirmed_fields: Vec<String>,
+    generated_at: String,
+}
+#[derive(Serialize, Clone)]
+struct TodayProject {
+    id: i64,
+    title: String,
+    path: Option<String>,
+    pinned: bool,
+    updated_at: String,
+    last_activity_at: Option<String>,
+    current_stage: String,
+    next_action: String,
+    last_completed: String,
+    blocker_count: i64,
+    codex: ProjectAvailability,
+    git: ProjectAvailability,
+    latest_progress_version: Option<i64>,
+    progress_document_paths: Vec<String>,
 }
 #[derive(Serialize)]
 struct WorkspaceDetail {
@@ -409,7 +491,7 @@ fn init_db() -> Connection {
     CREATE TABLE IF NOT EXISTS sync_cursors(id INTEGER PRIMARY KEY, agent TEXT NOT NULL UNIQUE, cursor TEXT, updated_at TEXT);
     CREATE TABLE IF NOT EXISTS timeline_file_state(agent TEXT NOT NULL, path TEXT NOT NULL, modified_at TEXT NOT NULL, size INTEGER NOT NULL, PRIMARY KEY(agent,path));
     CREATE TABLE IF NOT EXISTS timeline_file_events(agent TEXT NOT NULL, path TEXT NOT NULL, source_key TEXT NOT NULL, at TEXT NOT NULL, skill TEXT NOT NULL, session_id TEXT NOT NULL, occurrences INTEGER NOT NULL DEFAULT 1, summary TEXT NOT NULL, timestamp_quality TEXT NOT NULL DEFAULT 'exact', PRIMARY KEY(agent,path,source_key));
-    CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, title TEXT NOT NULL, path TEXT UNIQUE, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY, title TEXT NOT NULL, path TEXT UNIQUE, updated_at TEXT NOT NULL, pinned INTEGER NOT NULL DEFAULT 0, current_progress_version_id INTEGER);
     CREATE TABLE IF NOT EXISTS knowledge_roots(id INTEGER PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('project','agent_artifact')), path TEXT NOT NULL UNIQUE, project_id INTEGER, enabled INTEGER NOT NULL DEFAULT 1, last_scan TEXT, detail TEXT NOT NULL DEFAULT '等待扫描');
     CREATE TABLE IF NOT EXISTS knowledge_items(id INTEGER PRIMARY KEY, title TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('note','file','agent_artifact')), source_root_id INTEGER, source_path TEXT UNIQUE, capture_kind TEXT NOT NULL DEFAULT 'note', source_uri TEXT, content_hash TEXT, excerpt TEXT NOT NULL DEFAULT '', body TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'inbox' CHECK(status IN ('inbox','archived','ignored')), project_id INTEGER, available INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS ignored_sources(source_path TEXT PRIMARY KEY, root_id INTEGER, ignored_at TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'manual');
@@ -419,6 +501,7 @@ fn init_db() -> Connection {
     CREATE TABLE IF NOT EXISTS task_projects(task_id INTEGER NOT NULL, project_id INTEGER NOT NULL, PRIMARY KEY(task_id,project_id));
     CREATE TABLE IF NOT EXISTS task_sources(id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', uri TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_runs(id TEXT PRIMARY KEY, task_id INTEGER, agent TEXT NOT NULL, workspace_path TEXT NOT NULL, window_mode TEXT NOT NULL, transport TEXT NOT NULL, window_handle INTEGER, prompt_snapshot TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, error_message TEXT, session_id TEXT, match_state TEXT NOT NULL DEFAULT 'matched', result_state TEXT NOT NULL DEFAULT 'none', result_summary TEXT NOT NULL DEFAULT '', changed_files TEXT NOT NULL DEFAULT '', verification TEXT NOT NULL DEFAULT '', unresolved_issues TEXT NOT NULL DEFAULT '', raw_excerpt TEXT NOT NULL DEFAULT '', result_source_path TEXT, completed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, change_source TEXT NOT NULL DEFAULT 'legacy_history', baseline_manifest TEXT NOT NULL DEFAULT '', baseline_at TEXT, intermediate_files TEXT NOT NULL DEFAULT '', change_error TEXT);
+    CREATE TABLE IF NOT EXISTS progress_versions(id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, version INTEGER NOT NULL, current_stage TEXT NOT NULL DEFAULT '', last_completed TEXT NOT NULL DEFAULT '', next_action TEXT NOT NULL DEFAULT '', blockers TEXT NOT NULL DEFAULT '', validation TEXT NOT NULL DEFAULT '', workspace_changes TEXT NOT NULL DEFAULT '', source_refs TEXT NOT NULL DEFAULT '[]', user_confirmed_fields TEXT NOT NULL DEFAULT '[]', generated_at TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(project_id,version));
   ").expect("create local schema");
     db.execute("CREATE TABLE IF NOT EXISTS skill_update_commands(agent TEXT PRIMARY KEY, command TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)", []).expect("create skill update command schema");
     let columns: Vec<String> = db
@@ -446,6 +529,24 @@ fn init_db() -> Connection {
         db.execute("ALTER TABLE projects ADD COLUMN last_opened_at TEXT", [])
             .expect("add workspace last opened");
     }
+    if !columns.iter().any(|name| name == "pinned") {
+        db.execute(
+            "ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .expect("add workspace pinned");
+    }
+    if !columns
+        .iter()
+        .any(|name| name == "current_progress_version_id")
+    {
+        db.execute(
+            "ALTER TABLE projects ADD COLUMN current_progress_version_id INTEGER",
+            [],
+        )
+        .expect("add current progress version");
+    }
+    migrate_progress_document_paths(&db).expect("add progress document paths");
     let timeline_columns: Vec<String> = db
         .prepare("PRAGMA table_info(timeline_events)")
         .expect("inspect timeline schema")
@@ -3376,22 +3477,23 @@ fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
         description: row.get(2)?,
         path: row.get(3)?,
         color: row.get(4)?,
-        updated_at: row.get(5)?,
-        last_opened_at: row.get(6)?,
-        inbox_count: row.get(7)?,
-        knowledge_count: row.get(8)?,
-        source_count: row.get(9)?,
+        pinned: row.get::<_, i64>(5)? != 0,
+        updated_at: row.get(6)?,
+        last_opened_at: row.get(7)?,
+        inbox_count: row.get(8)?,
+        knowledge_count: row.get(9)?,
+        source_count: row.get(10)?,
     })
 }
 fn workspace_query() -> &'static str {
-    "SELECT p.id,p.title,p.description,p.path,p.color,p.updated_at,p.last_opened_at,(SELECT COUNT(*) FROM knowledge_items k WHERE k.project_id=p.id AND k.status='inbox' AND k.available=1),(SELECT COUNT(*) FROM knowledge_items k WHERE k.project_id=p.id AND k.status='archived'),(SELECT COUNT(*) FROM knowledge_roots r WHERE r.project_id=p.id AND r.enabled=1) FROM projects p"
+    "SELECT p.id,p.title,p.description,p.path,p.color,p.pinned,p.updated_at,p.last_opened_at,(SELECT COUNT(*) FROM knowledge_items k WHERE k.project_id=p.id AND k.status='inbox' AND k.available=1),(SELECT COUNT(*) FROM knowledge_items k WHERE k.project_id=p.id AND k.status='archived'),(SELECT COUNT(*) FROM knowledge_roots r WHERE r.project_id=p.id AND r.enabled=1) FROM projects p"
 }
 #[tauri::command]
 fn list_workspaces(db: State<Db>) -> Result<Vec<Workspace>, String> {
     let db = lock(&db)?;
     let mut s = db
         .prepare(&format!(
-            "{} ORDER BY COALESCE(p.last_opened_at,p.updated_at) DESC,p.title COLLATE NOCASE",
+            "{} ORDER BY p.pinned DESC,COALESCE(p.last_opened_at,p.updated_at) DESC,p.title COLLATE NOCASE",
             workspace_query()
         ))
         .map_err(|e| e.to_string())?;
@@ -3426,9 +3528,13 @@ fn save_workspace(workspace: WorkspaceInput, db: State<Db>) -> Result<Workspace,
         workspace.color.trim()
     };
     if let Some(id) = workspace.id {
-        db.execute("UPDATE projects SET title=?1,description=?2,path=?3,color=?4,updated_at=?5 WHERE id=?6",params![title,workspace.description.trim(),path,color,now(),id]).map_err(|e|e.to_string())?;
+        if let Some(pinned) = workspace.pinned {
+            db.execute("UPDATE projects SET title=?1,description=?2,path=?3,color=?4,pinned=?5,updated_at=?6 WHERE id=?7",params![title,workspace.description.trim(),path,color,if pinned { 1 } else { 0 },now(),id]).map_err(|e|e.to_string())?;
+        } else {
+            db.execute("UPDATE projects SET title=?1,description=?2,path=?3,color=?4,updated_at=?5 WHERE id=?6",params![title,workspace.description.trim(),path,color,now(),id]).map_err(|e|e.to_string())?;
+        }
     } else {
-        db.execute("INSERT INTO projects(title,description,path,color,updated_at,last_opened_at) VALUES(?1,?2,?3,?4,?5,?5)",params![title,workspace.description.trim(),path,color,now()]).map_err(|e|e.to_string())?;
+        db.execute("INSERT INTO projects(title,description,path,color,pinned,updated_at,last_opened_at) VALUES(?1,?2,?3,?4,?5,?6,?6)",params![title,workspace.description.trim(),path,color,if workspace.pinned.unwrap_or(false) { 1 } else { 0 },now()]).map_err(|e|e.to_string())?;
     }
     let id = workspace.id.unwrap_or_else(|| db.last_insert_rowid());
     db.query_row(
@@ -3437,6 +3543,713 @@ fn save_workspace(workspace: WorkspaceInput, db: State<Db>) -> Result<Workspace,
         workspace_from_row,
     )
     .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn set_workspace_pinned(id: i64, pinned: bool, db: State<Db>) -> Result<Workspace, String> {
+    let db = lock(&db)?;
+    if db
+        .execute(
+            "UPDATE projects SET pinned=?1,updated_at=?2 WHERE id=?3",
+            params![if pinned { 1 } else { 0 }, now(), id],
+        )
+        .map_err(|error| error.to_string())?
+        == 0
+    {
+        return Err("工作区不存在".into());
+    }
+    db.query_row(
+        &format!("{} WHERE p.id=?1", workspace_query()),
+        [id],
+        workspace_from_row,
+    )
+    .map_err(|error| error.to_string())
+}
+fn project_task_summary(
+    db: &Connection,
+    project_id: i64,
+    statuses: &str,
+) -> Option<(String, String)> {
+    db.query_row(
+        &format!(
+            "SELECT t.title,t.status FROM tasks t JOIN task_projects tp ON tp.task_id=t.id WHERE tp.project_id=?1 AND t.status IN ({statuses}) ORDER BY t.updated_at DESC LIMIT 1"
+        ),
+        [project_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .ok()
+}
+fn task_status_label(status: &str) -> &'static str {
+    match status {
+        "draft" => "草稿",
+        "ready" => "待推进",
+        "in_progress" => "执行中",
+        "blocked" => "被阻塞",
+        "done" => "已完成",
+        _ => "未记录",
+    }
+}
+fn project_blocker_count(db: &Connection, project_id: i64) -> i64 {
+    db.query_row(
+        "SELECT COUNT(*) FROM tasks t JOIN task_projects tp ON tp.task_id=t.id WHERE tp.project_id=?1 AND t.status='blocked'",
+        [project_id],
+        |row| row.get(0),
+    )
+    .unwrap_or_default()
+}
+fn project_codex_availability() -> ProjectAvailability {
+    match first_command_path("codex") {
+        Some(path) => ProjectAvailability {
+            state: "available".into(),
+            detail: format!("Codex CLI 已找到：{path}"),
+        },
+        None => ProjectAvailability {
+            state: "unavailable".into(),
+            detail: "未找到 Codex CLI".into(),
+        },
+    }
+}
+fn project_git_availability(path: &Option<String>) -> ProjectAvailability {
+    let Some(path) = path else {
+        return ProjectAvailability {
+            state: "unavailable".into(),
+            detail: "未绑定项目目录".into(),
+        };
+    };
+    if first_command_path("git").is_none() {
+        return ProjectAvailability {
+            state: "unavailable".into(),
+            detail: "未找到 Git 命令".into(),
+        };
+    }
+    let repository = Command::new("git")
+        .args(["-C", path, "rev-parse", "--show-toplevel"])
+        .output();
+    if repository
+        .as_ref()
+        .map(|output| !output.status.success())
+        .unwrap_or(true)
+    {
+        return ProjectAvailability {
+            state: "unavailable".into(),
+            detail: "项目目录不是 Git 仓库".into(),
+        };
+    }
+    let status = Command::new("git")
+        .args(["-C", path, "status", "--short"])
+        .output();
+    match status {
+        Ok(output) if output.status.success() => {
+            let changed_files = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .count();
+            ProjectAvailability {
+                state: "available".into(),
+                detail: if changed_files == 0 {
+                    "工作区干净".into()
+                } else {
+                    format!("{changed_files} 个未提交变化")
+                },
+            }
+        }
+        _ => ProjectAvailability {
+            state: "unavailable".into(),
+            detail: "无法读取 Git 工作区状态".into(),
+        },
+    }
+}
+fn progress_sources_json(sources: &[ProgressSource]) -> String {
+    serde_json::to_string(sources).unwrap_or_else(|_| "[]".into())
+}
+fn progress_sources_from_json(value: &str) -> Vec<ProgressSource> {
+    serde_json::from_str(value).unwrap_or_default()
+}
+fn progress_version_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProgressVersion> {
+    let source_refs: String = row.get(9)?;
+    let user_confirmed_fields: String = row.get(10)?;
+    Ok(ProgressVersion {
+        id: row.get(0)?,
+        project_id: row.get(1)?,
+        version: row.get(2)?,
+        current_stage: row.get(3)?,
+        last_completed: row.get(4)?,
+        next_action: row.get(5)?,
+        blockers: row.get(6)?,
+        validation: row.get(7)?,
+        workspace_changes: row.get(8)?,
+        source_refs: progress_sources_from_json(&source_refs),
+        user_confirmed_fields: serde_json::from_str(&user_confirmed_fields).unwrap_or_default(),
+        generated_at: row.get(11)?,
+        created_at: row.get(12)?,
+    })
+}
+fn progress_version_query() -> &'static str {
+    "SELECT id,project_id,version,current_stage,last_completed,next_action,blockers,validation,workspace_changes,source_refs,user_confirmed_fields,generated_at,created_at FROM progress_versions"
+}
+fn latest_progress_version(db: &Connection, project_id: i64) -> Option<ProgressVersion> {
+    db.query_row(
+        &format!(
+            "{} WHERE project_id=?1 ORDER BY version DESC LIMIT 1",
+            progress_version_query()
+        ),
+        [project_id],
+        progress_version_from_row,
+    )
+    .ok()
+}
+fn progress_doc_value(content: &str, labels: &[&str]) -> Option<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let field = trimmed.trim_start_matches(['-', '*', '#', ' ']);
+        let matches_label = |value: &str| {
+            let value = value.trim().trim_matches(['*', '`']);
+            labels.iter().any(|label| value.eq_ignore_ascii_case(label))
+        };
+        if let Some((label, value)) = field.split_once([':', '：']) {
+            if matches_label(label) {
+                let value = value.trim().trim_matches(['*', '`']).trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+        if trimmed.starts_with('#') && matches_label(field.trim_end_matches('#').trim()) {
+            for next in &lines[index + 1..] {
+                let next = next.trim();
+                if next.starts_with('#') {
+                    break;
+                }
+                if next.is_empty() {
+                    continue;
+                }
+                let value = next.trim_start_matches(['-', '*', ' ']);
+                let value = if let Some((number, item)) = value.split_once(['.', '、', ')']) {
+                    if !number.is_empty() && number.chars().all(|c| c.is_ascii_digit()) {
+                        item.trim()
+                    } else {
+                        value
+                    }
+                } else {
+                    value
+                };
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+fn project_progress_document_paths(
+    db: &Connection,
+    project_id: i64,
+) -> Result<Vec<String>, String> {
+    let value: String = db
+        .query_row(
+            "SELECT progress_document_paths FROM projects WHERE id=?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "无法读取项目进度文档配置".to_string())?;
+    serde_json::from_str(&value).map_err(|_| "项目进度文档配置无效，请重新配置".into())
+}
+fn migrate_progress_document_paths(db: &Connection) -> rusqlite::Result<()> {
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('projects') WHERE name='progress_document_paths')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        db.execute(
+            "ALTER TABLE projects ADD COLUMN progress_document_paths TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
+    Ok(())
+}
+fn progress_document_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    if relative.is_empty() || relative.chars().count() > 260 || relative.contains([':', '\0']) {
+        return Err("进度文档路径为空、过长或包含无效字符".into());
+    }
+    let normalized = relative.replace('\\', "/");
+    let path = Path::new(&normalized);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err("进度文档必须使用项目内相对路径，不能包含父目录".into());
+    }
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+    {
+        return Err("进度文档必须是 Markdown (.md) 文件".into());
+    }
+    let root = root
+        .canonicalize()
+        .map_err(|_| "项目目录不存在或不可访问".to_string())?;
+    let resolved = root
+        .join(path)
+        .canonicalize()
+        .map_err(|_| "进度文档不存在或不可访问".to_string())?;
+    if !resolved.starts_with(&root) {
+        return Err("进度文档链接指向项目目录之外".into());
+    }
+    let metadata = fs::metadata(&resolved).map_err(|_| "无法读取进度文档".to_string())?;
+    if !metadata.is_file() || metadata.len() > MAX_INDEXED_BYTES {
+        return Err("进度文档必须是小于 1 MB 的文件".into());
+    }
+    Ok(resolved)
+}
+fn configure_progress_documents_db(
+    project_id: i64,
+    paths: Vec<String>,
+    db: &Connection,
+) -> Result<Vec<String>, String> {
+    if paths.len() > 8 {
+        return Err("最多配置 8 个进度文档".into());
+    }
+    let root: Option<String> = db
+        .query_row(
+            "SELECT path FROM projects WHERE id=?1",
+            [project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "项目不存在".to_string())?;
+    let mut configured = Vec::new();
+    for path in paths {
+        let path = path.trim().replace('\\', "/");
+        let root = root
+            .as_deref()
+            .ok_or_else(|| "请先绑定项目目录".to_string())?;
+        let resolved = progress_document_path(Path::new(root), &path)?;
+        fs::read_to_string(resolved)
+            .map_err(|_| "进度文档不是可读的 UTF-8 Markdown 文件".to_string())?;
+        if !configured.contains(&path) {
+            configured.push(path);
+        }
+    }
+    let value =
+        serde_json::to_string(&configured).map_err(|_| "无法保存进度文档配置".to_string())?;
+    db.execute(
+        "UPDATE projects SET progress_document_paths=?1 WHERE id=?2",
+        params![value, project_id],
+    )
+    .map_err(|_| "无法保存进度文档配置".to_string())?;
+    Ok(configured)
+}
+#[tauri::command]
+fn configure_progress_documents(
+    project_id: i64,
+    paths: Vec<String>,
+    db: State<Db>,
+) -> Result<Vec<String>, String> {
+    let db = lock(&db)?;
+    configure_progress_documents_db(project_id, paths, &db)
+}
+fn read_progress_documents(
+    path: &Option<String>,
+    configured_paths: &[String],
+    generated_at: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Vec<ProgressSource>,
+) {
+    let Some(path) = path else {
+        return (None, None, None, None, Vec::new());
+    };
+    let mut current_stage = None;
+    let mut last_completed = None;
+    let mut next_action = None;
+    let mut blockers = None;
+    let mut sources = Vec::new();
+    let defaults = [
+        "PROGRESS.md",
+        "docs/development-progress.md",
+        "task_plan.md",
+        "findings.md",
+    ]
+    .map(str::to_string);
+    let paths = if configured_paths.is_empty() {
+        &defaults[..]
+    } else {
+        configured_paths
+    };
+    for filename in paths {
+        let result = progress_document_path(Path::new(path), filename).and_then(|document_path| {
+            fs::read_to_string(&document_path)
+                .map(|content| (document_path, content))
+                .map_err(|_| "无法读取 UTF-8 Markdown 内容".to_string())
+        });
+        let (document_path, content) = match result {
+            Ok(result) => result,
+            Err(detail) => {
+                sources.push(ProgressSource {
+                    kind: "document_unavailable".into(),
+                    label: filename.clone(),
+                    detail,
+                    at: generated_at.into(),
+                });
+                continue;
+            }
+        };
+        let content = content.chars().take(200_000).collect::<String>();
+        let document_source = document_path.to_string_lossy().to_string();
+        sources.push(ProgressSource {
+            kind: "document".into(),
+            label: filename.into(),
+            detail: document_source,
+            at: generated_at.into(),
+        });
+        current_stage =
+            current_stage.or_else(|| progress_doc_value(&content, &["当前阶段", "current stage"]));
+        last_completed = last_completed
+            .or_else(|| progress_doc_value(&content, &["上次完成", "已完成", "completed"]));
+        next_action = next_action
+            .or_else(|| progress_doc_value(&content, &["下一步", "next step", "next action"]));
+        blockers =
+            blockers.or_else(|| progress_doc_value(&content, &["阻塞", "blocker", "blocked"]));
+    }
+    (
+        current_stage,
+        last_completed,
+        next_action,
+        blockers,
+        sources,
+    )
+}
+fn blocked_task_titles(db: &Connection, project_id: i64) -> Vec<String> {
+    db.prepare("SELECT t.title FROM tasks t JOIN task_projects tp ON tp.task_id=t.id WHERE tp.project_id=?1 AND t.status='blocked' ORDER BY t.updated_at DESC LIMIT 5")
+        .and_then(|mut statement| {
+            statement
+                .query_map([project_id], |row| row.get(0))
+                .and_then(|rows| rows.collect::<Result<Vec<String>, _>>())
+        })
+        .unwrap_or_default()
+}
+fn latest_validation(db: &Connection, path: &Option<String>) -> Option<(String, String)> {
+    let path = path.as_deref()?;
+    db.query_row(
+        "SELECT verification,updated_at FROM agent_runs WHERE workspace_path=?1 AND TRIM(verification)<>'' ORDER BY updated_at DESC LIMIT 1",
+        [path],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .ok()
+}
+fn replace_confirmed_progress_fields(
+    draft: &mut ProgressDraft,
+    previous: Option<&ProgressVersion>,
+    evidence_fields: &[&str],
+) {
+    let Some(previous) = previous else {
+        return;
+    };
+    for field in &previous.user_confirmed_fields {
+        let (suggested, confirmed) = match field.as_str() {
+            "current_stage" => (&mut draft.current_stage, &previous.current_stage),
+            "last_completed" => (&mut draft.last_completed, &previous.last_completed),
+            "next_action" => (&mut draft.next_action, &previous.next_action),
+            "blockers" => (&mut draft.blockers, &previous.blockers),
+            "validation" => (&mut draft.validation, &previous.validation),
+            "workspace_changes" => (&mut draft.workspace_changes, &previous.workspace_changes),
+            _ => continue,
+        };
+        if evidence_fields.contains(&field.as_str()) && suggested.trim() != confirmed.trim() {
+            draft.conflicts.push(ProgressConflict {
+                field: field.clone(),
+                confirmed_value: confirmed.clone(),
+                suggested_value: suggested.clone(),
+            });
+        }
+        *suggested = confirmed.clone();
+        draft.preserved_fields.push(field.clone());
+    }
+}
+#[tauri::command]
+fn generate_progress_draft(project_id: i64, db: State<Db>) -> Result<ProgressDraft, String> {
+    let db = lock(&db)?;
+    let workspace = db
+        .query_row(
+            &format!("{} WHERE p.id=?1", workspace_query()),
+            [project_id],
+            workspace_from_row,
+        )
+        .map_err(|_| "项目不存在".to_string())?;
+    let codex = project_codex_availability();
+    let git = project_git_availability(&workspace.path);
+    if codex.state != "available" || git.state != "available" {
+        return Err("Codex 与 Git 必须同时可用，当前只能查看。".into());
+    }
+    let generated_at = now();
+    let configured_paths = project_progress_document_paths(&db, project_id)?;
+    let (document_stage, document_completed, document_next, document_blockers, mut source_refs) =
+        read_progress_documents(&workspace.path, &configured_paths, &generated_at);
+    let current_task =
+        project_task_summary(&db, project_id, "'draft','ready','in_progress','blocked'");
+    let completed_task = project_task_summary(&db, project_id, "'done'");
+    if current_task.is_some() {
+        source_refs.push(ProgressSource {
+            kind: "task".into(),
+            label: "工作台任务".into(),
+            detail: current_task
+                .as_ref()
+                .map(|task| task.0.clone())
+                .unwrap_or_default(),
+            at: generated_at.clone(),
+        });
+    }
+    if let Some(completed_task) = &completed_task {
+        source_refs.push(ProgressSource {
+            kind: "task".into(),
+            label: "已完成任务".into(),
+            detail: completed_task.0.clone(),
+            at: generated_at.clone(),
+        });
+    }
+    let blockers = blocked_task_titles(&db, project_id);
+    if !blockers.is_empty() {
+        source_refs.push(ProgressSource {
+            kind: "task".into(),
+            label: "阻塞任务".into(),
+            detail: blockers.join("、"),
+            at: generated_at.clone(),
+        });
+    }
+    let validation = latest_validation(&db, &workspace.path);
+    if let Some((_, at)) = &validation {
+        source_refs.push(ProgressSource {
+            kind: "validation".into(),
+            label: "Agent 验证记录".into(),
+            detail: validation
+                .as_ref()
+                .map(|item| item.0.clone())
+                .unwrap_or_default(),
+            at: at.clone(),
+        });
+    }
+    source_refs.push(ProgressSource {
+        kind: "git".into(),
+        label: "Git 工作区".into(),
+        detail: git.detail.clone(),
+        at: generated_at.clone(),
+    });
+    let evidence_fields: Vec<&str> = [
+        (
+            "current_stage",
+            document_stage.is_some() || current_task.is_some(),
+        ),
+        (
+            "last_completed",
+            document_completed.is_some() || completed_task.is_some(),
+        ),
+        (
+            "next_action",
+            document_next.is_some() || current_task.is_some(),
+        ),
+        (
+            "blockers",
+            document_blockers.is_some() || !blockers.is_empty(),
+        ),
+        ("validation", validation.is_some()),
+        ("workspace_changes", true),
+    ]
+    .into_iter()
+    .filter_map(|(field, available)| available.then_some(field))
+    .collect();
+    let mut draft = ProgressDraft {
+        project_id,
+        project_title: workspace.title,
+        current_stage: document_stage
+            .or_else(|| {
+                current_task
+                    .as_ref()
+                    .map(|(_, status)| task_status_label(status).into())
+            })
+            .unwrap_or_else(|| "未记录".into()),
+        last_completed: document_completed
+            .or_else(|| completed_task.map(|(title, _)| title))
+            .unwrap_or_else(|| "未记录".into()),
+        next_action: document_next
+            .or_else(|| current_task.map(|(title, _)| title))
+            .unwrap_or_else(|| "未记录".into()),
+        blockers: document_blockers
+            .or_else(|| {
+                if blockers.is_empty() {
+                    None
+                } else {
+                    Some(blockers.join("、"))
+                }
+            })
+            .unwrap_or_else(|| "无明确阻塞".into()),
+        validation: validation
+            .map(|(summary, _)| summary)
+            .unwrap_or_else(|| "未记录验证".into()),
+        workspace_changes: git.detail,
+        source_refs,
+        preserved_fields: Vec::new(),
+        conflicts: Vec::new(),
+        generated_at,
+    };
+    let previous = latest_progress_version(&db, project_id);
+    replace_confirmed_progress_fields(&mut draft, previous.as_ref(), &evidence_fields);
+    Ok(draft)
+}
+#[tauri::command]
+fn list_progress_versions(project_id: i64, db: State<Db>) -> Result<Vec<ProgressVersion>, String> {
+    let db = lock(&db)?;
+    let mut statement = db
+        .prepare(&format!(
+            "{} WHERE project_id=?1 ORDER BY version DESC LIMIT 10",
+            progress_version_query()
+        ))
+        .map_err(|error| error.to_string())?;
+    let versions = statement
+        .query_map([project_id], progress_version_from_row)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(versions)
+}
+#[tauri::command]
+fn save_progress_version(
+    input: ProgressVersionInput,
+    db: State<Db>,
+) -> Result<ProgressVersion, String> {
+    let db = lock(&db)?;
+    save_progress_version_db(input, &db, check_progress_availability)
+}
+fn check_progress_availability(path: &Option<String>) -> Result<(), String> {
+    let codex = project_codex_availability();
+    let git = project_git_availability(path);
+    require_progress_availability(&codex, &git)
+}
+fn require_progress_availability(
+    codex: &ProjectAvailability,
+    git: &ProjectAvailability,
+) -> Result<(), String> {
+    if codex.state != "available" || git.state != "available" {
+        return Err("Codex 与 Git 必须同时可用，当前只能查看。".into());
+    }
+    Ok(())
+}
+fn save_progress_version_db(
+    input: ProgressVersionInput,
+    db: &Connection,
+    check_availability: impl FnOnce(&Option<String>) -> Result<(), String>,
+) -> Result<ProgressVersion, String> {
+    let path = db
+        .query_row(
+            "SELECT path FROM projects WHERE id=?1",
+            [input.project_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(|_| "项目不存在".to_string())?;
+    check_availability(&path)?;
+    let created_at = now();
+    let confirmed_fields = serde_json::to_string(&input.user_confirmed_fields)
+        .map_err(|_| "无法保存确认字段".to_string())?;
+    let tx = db
+        .unchecked_transaction()
+        .map_err(|_| "无法开始进度保存，请稍后重试".to_string())?;
+    let next_version: i64 = tx
+        .query_row(
+            "SELECT COALESCE(MAX(version),0)+1 FROM progress_versions WHERE project_id=?1",
+            [input.project_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "无法读取进度版本，请稍后重试".to_string())?;
+    tx.execute(
+        "INSERT INTO progress_versions(project_id,version,current_stage,last_completed,next_action,blockers,validation,workspace_changes,source_refs,user_confirmed_fields,generated_at,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+        params![
+            input.project_id,
+            next_version,
+            input.current_stage.trim(),
+            input.last_completed.trim(),
+            input.next_action.trim(),
+            input.blockers.trim(),
+            input.validation.trim(),
+            input.workspace_changes.trim(),
+            progress_sources_json(&input.source_refs),
+            confirmed_fields,
+            input.generated_at,
+            created_at,
+        ],
+    )
+    .map_err(|_| "无法保存进度版本，请稍后重试".to_string())?;
+    let version_id = tx.last_insert_rowid();
+    tx.execute(
+        "UPDATE projects SET current_progress_version_id=?1,updated_at=?2 WHERE id=?3",
+        params![version_id, now(), input.project_id],
+    )
+    .map_err(|_| "无法更新项目进度，请稍后重试".to_string())?;
+    tx.commit()
+        .map_err(|_| "无法完成进度保存，请稍后重试".to_string())?;
+    db.query_row(
+        &format!("{} WHERE id=?1", progress_version_query()),
+        [version_id],
+        progress_version_from_row,
+    )
+    .map_err(|_| "版本已保存，读取结果失败，请刷新查看历史版本".to_string())
+}
+#[tauri::command]
+fn list_today_projects(db: State<Db>) -> Result<Vec<TodayProject>, String> {
+    let db = lock(&db)?;
+    let mut statement = db
+        .prepare(&format!(
+            "{} ORDER BY p.pinned DESC,COALESCE(p.last_opened_at,p.updated_at) DESC,p.title COLLATE NOCASE",
+            workspace_query()
+        ))
+        .map_err(|error| error.to_string())?;
+    let workspaces = statement
+        .query_map([], workspace_from_row)
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let codex = project_codex_availability();
+    workspaces
+        .into_iter()
+        .map(|workspace| {
+            let current =
+                project_task_summary(&db, workspace.id, "'draft','ready','in_progress','blocked'");
+            let completed = project_task_summary(&db, workspace.id, "'done'");
+            let stage = current
+                .as_ref()
+                .map(|(_, status)| task_status_label(status))
+                .unwrap_or("未记录")
+                .to_string();
+            Ok(TodayProject {
+                id: workspace.id,
+                title: workspace.title,
+                path: workspace.path.clone(),
+                pinned: workspace.pinned,
+                updated_at: workspace.updated_at,
+                last_activity_at: workspace.last_opened_at,
+                current_stage: stage,
+                next_action: current
+                    .map(|(title, _)| title)
+                    .unwrap_or_else(|| "尚未记录下一步".into()),
+                last_completed: completed
+                    .map(|(title, _)| title)
+                    .unwrap_or_else(|| "暂无已完成事项".into()),
+                blocker_count: project_blocker_count(&db, workspace.id),
+                codex: codex.clone(),
+                git: project_git_availability(&workspace.path),
+                latest_progress_version: latest_progress_version(&db, workspace.id)
+                    .map(|version| version.version),
+                progress_document_paths: project_progress_document_paths(&db, workspace.id)?,
+            })
+        })
+        .collect()
 }
 #[tauri::command]
 fn mark_workspace_opened(id: i64, db: State<Db>) -> Result<(), String> {
@@ -3877,6 +4690,12 @@ pub fn run() {
             delete_project,
             list_workspaces,
             save_workspace,
+            set_workspace_pinned,
+            list_today_projects,
+            generate_progress_draft,
+            list_progress_versions,
+            save_progress_version,
+            configure_progress_documents,
             mark_workspace_opened,
             delete_workspace,
             get_workspace_detail,
@@ -4002,6 +4821,288 @@ mod tests {
     fn indexes_only_safe_text_formats() {
         assert!(is_supported(Path::new("note.md")));
         assert!(!is_supported(Path::new("image.png")));
+    }
+    #[test]
+    fn extracts_progress_document_values_without_guessing() {
+        let content = "## 当前阶段\n阶段 2：数据模型\n\n## 下一步\n实现今日首页\n";
+        assert_eq!(
+            progress_doc_value(content, &["当前阶段"]),
+            Some("阶段 2：数据模型".into())
+        );
+        assert_eq!(
+            progress_doc_value(content, &["下一步"]),
+            Some("实现今日首页".into())
+        );
+        assert_eq!(progress_doc_value(content, &["阻塞"]), None);
+    }
+    #[test]
+    fn preserves_user_confirmed_progress_fields() {
+        let mut draft = ProgressDraft {
+            project_id: 1,
+            project_title: "项目".into(),
+            current_stage: "自动阶段".into(),
+            last_completed: "自动完成".into(),
+            next_action: "未记录".into(),
+            blockers: "自动阻塞".into(),
+            validation: "自动验证".into(),
+            workspace_changes: "自动变化".into(),
+            source_refs: Vec::new(),
+            preserved_fields: Vec::new(),
+            conflicts: Vec::new(),
+            generated_at: "now".into(),
+        };
+        let previous = ProgressVersion {
+            id: 1,
+            project_id: 1,
+            version: 1,
+            current_stage: "用户阶段".into(),
+            last_completed: "自动完成".into(),
+            next_action: "用户下一步".into(),
+            blockers: "自动阻塞".into(),
+            validation: "自动验证".into(),
+            workspace_changes: "自动变化".into(),
+            source_refs: Vec::new(),
+            user_confirmed_fields: vec![
+                "current_stage".into(),
+                "next_action".into(),
+                "last_completed".into(),
+            ],
+            generated_at: "old".into(),
+            created_at: "old".into(),
+        };
+        replace_confirmed_progress_fields(
+            &mut draft,
+            Some(&previous),
+            &["current_stage", "last_completed"],
+        );
+        assert_eq!(draft.current_stage, "用户阶段");
+        assert_eq!(draft.next_action, "用户下一步");
+        assert_eq!(draft.last_completed, "自动完成");
+        assert_eq!(
+            draft.preserved_fields,
+            ["current_stage", "next_action", "last_completed"]
+        );
+        assert_eq!(draft.conflicts.len(), 1);
+        assert_eq!(draft.conflicts[0].field, "current_stage");
+        assert_eq!(draft.conflicts[0].confirmed_value, "用户阶段");
+        assert_eq!(draft.conflicts[0].suggested_value, "自动阶段");
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    fn progress_db() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE projects(id INTEGER PRIMARY KEY,path TEXT,updated_at TEXT,current_progress_version_id INTEGER);
+            INSERT INTO projects VALUES(1,'project-root','original',NULL);
+            CREATE TABLE progress_versions(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,version INTEGER NOT NULL,current_stage TEXT,last_completed TEXT,next_action TEXT,blockers TEXT,validation TEXT,workspace_changes TEXT,source_refs TEXT,user_confirmed_fields TEXT,generated_at TEXT,created_at TEXT,UNIQUE(project_id,version));").unwrap();
+        migrate_progress_document_paths(&db).unwrap();
+        db
+    }
+    fn input(stage: &str) -> ProgressVersionInput {
+        ProgressVersionInput {
+            project_id: 1,
+            current_stage: stage.into(),
+            last_completed: "完成内容".into(),
+            next_action: "下一步内容".into(),
+            blockers: String::new(),
+            validation: "cargo test".into(),
+            workspace_changes: "干净".into(),
+            source_refs: Vec::new(),
+            user_confirmed_fields: vec!["current_stage".into()],
+            generated_at: "generated".into(),
+        }
+    }
+    fn project_state(db: &Connection) -> (Option<i64>, String, i64) {
+        db.query_row("SELECT current_progress_version_id,updated_at,(SELECT COUNT(*) FROM progress_versions) FROM projects WHERE id=1", [], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?))).unwrap()
+    }
+    fn availability(available: bool) -> ProjectAvailability {
+        ProjectAvailability {
+            state: if available {
+                "available"
+            } else {
+                "unavailable"
+            }
+            .into(),
+            detail: String::new(),
+        }
+    }
+    #[test]
+    fn blocks_save_before_writes_when_codex_or_git_is_unavailable() {
+        let db = progress_db();
+        let first = save_progress_version_db(input("原阶段"), &db, |_| Ok(())).unwrap();
+        let original = project_state(&db);
+        for (codex, git) in [(false, true), (true, false), (false, false)] {
+            let result = save_progress_version_db(input("不能保存"), &db, |path| {
+                assert_eq!(path.as_deref(), Some("project-root"));
+                require_progress_availability(&availability(codex), &availability(git))
+            });
+            assert!(result.is_err());
+            assert_eq!(project_state(&db), original);
+            assert_eq!(latest_progress_version(&db, 1).unwrap().id, first.id);
+        }
+    }
+    #[test]
+    fn appends_progress_versions_and_preserves_history() {
+        let db = progress_db();
+        let first = save_progress_version_db(input("阶段 1"), &db, |_| Ok(())).unwrap();
+        let second = save_progress_version_db(input("阶段 2"), &db, |_| {
+            require_progress_availability(&availability(true), &availability(true))
+        })
+        .unwrap();
+        assert_eq!((first.version, second.version), (1, 2));
+        assert_eq!(project_state(&db).0, Some(second.id));
+        let history = db
+            .query_row(
+                &format!("{} WHERE id=?1", progress_version_query()),
+                [first.id],
+                progress_version_from_row,
+            )
+            .unwrap();
+        assert_eq!(history.current_stage, "阶段 1");
+        assert_eq!(history.user_confirmed_fields, ["current_stage"]);
+        assert_eq!(project_state(&db).2, 2);
+    }
+    #[test]
+    fn checks_live_availability_before_saving() {
+        let db = progress_db();
+        db.execute("UPDATE projects SET path=NULL WHERE id=1", [])
+            .unwrap();
+        let original = project_state(&db);
+        assert!(
+            save_progress_version_db(input("不可保存"), &db, check_progress_availability).is_err()
+        );
+        assert_eq!(project_state(&db), original);
+    }
+    #[test]
+    fn rolls_back_version_when_project_pointer_update_fails() {
+        let db = progress_db();
+        let original = project_state(&db);
+        db.execute_batch("CREATE TRIGGER fail_update BEFORE UPDATE ON projects BEGIN SELECT RAISE(ABORT,'private database detail'); END;").unwrap();
+        let error = save_progress_version_db(input("阶段"), &db, |_| Ok(()))
+            .err()
+            .unwrap();
+        assert_eq!(error, "无法更新项目进度，请稍后重试");
+        assert_eq!(project_state(&db), original);
+    }
+    #[test]
+    fn migrates_document_configuration_without_changing_existing_projects() {
+        let db = progress_db();
+        assert!(project_progress_document_paths(&db, 1).unwrap().is_empty());
+        migrate_progress_document_paths(&db).unwrap();
+        assert_eq!(project_state(&db), (None, "original".into(), 0));
+    }
+    #[test]
+    fn reads_default_and_configured_documents_with_explicit_missing_sources() {
+        let root = env::temp_dir().join(format!("workbench-progress-docs-{}", fnv_hash(&now())));
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(
+            root.join("docs/development-progress.md"),
+            "- 当前阶段：阶段 7\n\n## 下一步\n\n1. 完成真实桌面验收\n2. 后续工作\n",
+        )
+        .unwrap();
+        fs::write(root.join("task_plan.md"), "- 当前阶段：计划阶段\n").unwrap();
+        let path = Some(root.to_string_lossy().into_owned());
+        let (stage, _, next, _, sources) = read_progress_documents(&path, &[], "now");
+        assert_eq!(stage.as_deref(), Some("阶段 7"));
+        assert_eq!(next.as_deref(), Some("完成真实桌面验收"));
+        assert!(sources
+            .iter()
+            .any(|source| source.kind == "document_unavailable" && source.label == "PROGRESS.md"));
+        fs::write(root.join("PROGRESS.md"), "当前阶段: 根文档阶段\n").unwrap();
+        assert_eq!(
+            read_progress_documents(&path, &[], "now").0.as_deref(),
+            Some("根文档阶段")
+        );
+        let db = progress_db();
+        db.execute("UPDATE projects SET path=?1 WHERE id=1", [&path])
+            .unwrap();
+        let configured =
+            configure_progress_documents_db(1, vec!["docs/development-progress.md".into()], &db)
+                .unwrap();
+        assert_eq!(project_progress_document_paths(&db, 1).unwrap(), configured);
+        assert_eq!(
+            read_progress_documents(&path, &configured, "now")
+                .0
+                .as_deref(),
+            Some("阶段 7")
+        );
+        fs::remove_file(root.join("docs/development-progress.md")).unwrap();
+        let result = read_progress_documents(&path, &configured, "now");
+        assert!(result.0.is_none());
+        assert_eq!(result.4[0].kind, "document_unavailable");
+        assert!(configure_progress_documents_db(1, vec![], &db)
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn rejects_document_escape_invalid_extensions_and_unreadable_files_without_writes() {
+        let root = env::temp_dir().join(format!("workbench-progress-invalid-{}", fnv_hash(&now())));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("invalid.md"), [0xff, 0xff]).unwrap();
+        let db = progress_db();
+        db.execute(
+            "UPDATE projects SET path=?1 WHERE id=1",
+            [root.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        for path in [
+            "../outside.md",
+            "..\\outside.md",
+            "/outside.md",
+            "C:\\outside.md",
+            "\\\\server\\outside.md",
+            "note.txt",
+            "missing.md",
+            "invalid.md",
+        ] {
+            assert!(
+                configure_progress_documents_db(1, vec![path.into()], &db).is_err(),
+                "{path}"
+            );
+            assert!(project_progress_document_paths(&db, 1).unwrap().is_empty());
+        }
+        assert!(configure_progress_documents_db(1, vec!["note.md".into(); 9], &db).is_err());
+        assert!(progress_document_path(&root, &format!("{}.md", "a".repeat(260))).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn rejects_symlink_documents_outside_project() {
+        let root = env::temp_dir().join(format!("workbench-progress-link-{}", fnv_hash(&now())));
+        fs::create_dir_all(root.join("project")).unwrap();
+        fs::write(root.join("outside.md"), "当前阶段：外部").unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(root.join("outside.md"), root.join("project/linked.md"))
+            .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("outside.md"), root.join("project/linked.md"))
+            .unwrap();
+        assert_eq!(
+            progress_document_path(&root.join("project"), "linked.md")
+                .err()
+                .unwrap(),
+            "进度文档链接指向项目目录之外"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn parses_only_explicit_fields_and_sections() {
+        let content = "历史上当前阶段是阶段 2\n- 目标：更新下一步字段\n## 2026-10-01 · 下一步讨论\n曾计划修复\n- **当前阶段**：**阶段 7**\n## 下一步\n\n1. 实际下一步\n";
+        assert_eq!(
+            progress_doc_value(content, &["当前阶段"]),
+            Some("阶段 7".into())
+        );
+        assert_eq!(
+            progress_doc_value(content, &["下一步"]),
+            Some("实际下一步".into())
+        );
+        assert_eq!(
+            progress_doc_value("## 下一步\n\n## 后续章节\n无证据", &["下一步"]),
+            None
+        );
     }
 }
 

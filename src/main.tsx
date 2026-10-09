@@ -33,6 +33,10 @@ import {
   Search,
   Settings,
   Sparkles,
+  Star,
+  GitBranch,
+  ClipboardList,
+  Eye,
   Trash2,
   X,
 } from "lucide-react";
@@ -57,11 +61,85 @@ type Workspace = {
   description: string;
   path: string | null;
   color: string;
+  pinned: boolean;
   updated_at: string;
   last_opened_at: string | null;
   inbox_count: number;
   knowledge_count: number;
   source_count: number;
+};
+type ProjectAvailability = {
+  state: "available" | "unavailable" | string;
+  detail: string;
+};
+interface TodayProject {
+  id: number;
+  title: string;
+  path: string | null;
+  pinned: boolean;
+  updated_at: string;
+  last_activity_at: string | null;
+  current_stage: string;
+  next_action: string;
+  last_completed: string;
+  blocker_count: number;
+  codex: ProjectAvailability;
+  git: ProjectAvailability;
+  latest_progress_version: number | null;
+  progress_document_paths: string[];
+}
+type ProgressSource = {
+  kind: string;
+  label: string;
+  detail: string;
+  at: string;
+};
+type EditableProgressField = "current_stage" | "last_completed" | "next_action" | "blockers" | "validation" | "workspace_changes";
+interface ProgressConflict {
+  field: EditableProgressField;
+  confirmed_value: string;
+  suggested_value: string;
+}
+interface ProgressDraft {
+  project_id: number;
+  project_title: string;
+  current_stage: string;
+  last_completed: string;
+  next_action: string;
+  blockers: string;
+  validation: string;
+  workspace_changes: string;
+  source_refs: ProgressSource[];
+  preserved_fields: string[];
+  conflicts: ProgressConflict[];
+  generated_at: string;
+}
+type ProgressVersion = {
+  id: number;
+  project_id: number;
+  version: number;
+  current_stage: string;
+  last_completed: string;
+  next_action: string;
+  blockers: string;
+  validation: string;
+  workspace_changes: string;
+  source_refs: ProgressSource[];
+  user_confirmed_fields: string[];
+  generated_at: string;
+  created_at: string;
+};
+type ProgressVersionInput = {
+  project_id: number;
+  current_stage: string;
+  last_completed: string;
+  next_action: string;
+  blockers: string;
+  validation: string;
+  workspace_changes: string;
+  source_refs: ProgressSource[];
+  user_confirmed_fields: string[];
+  generated_at: string;
 };
 type KnowledgeRoot = {
   id: number;
@@ -400,6 +478,36 @@ type CopySkillResult = {
 
 const call = <T,>(command: string, args?: Record<string, unknown>) =>
   invoke<T>(command, args);
+function isTodayProject(value: unknown): value is TodayProject {
+  if (!value || typeof value !== "object") return false;
+  const project = value as Partial<TodayProject>;
+  return (
+    typeof project.id === "number" &&
+    typeof project.title === "string" &&
+    typeof project.pinned === "boolean" &&
+    typeof project.updated_at === "string" &&
+    typeof project.current_stage === "string" &&
+    typeof project.next_action === "string" &&
+    typeof project.last_completed === "string" &&
+    typeof project.blocker_count === "number" &&
+    Boolean(project.codex && typeof project.codex.state === "string" && typeof project.codex.detail === "string") &&
+    Boolean(project.git && typeof project.git.state === "string" && typeof project.git.detail === "string") &&
+    (project.progress_document_paths === undefined ||
+      (Array.isArray(project.progress_document_paths) && project.progress_document_paths.every((path) => typeof path === "string")))
+  );
+}
+function readTodayProjectCache(): TodayProject[] {
+  try {
+    const cached: unknown = JSON.parse(
+      localStorage.getItem("agent-workbench-today-projects") ?? "null",
+    );
+    return Array.isArray(cached)
+      ? cached.filter(isTodayProject).map((project) => ({ ...project, progress_document_paths: project.progress_document_paths ?? [] }))
+      : [];
+  } catch {
+    return [];
+  }
+}
 const emptyCard = (skill_id: number): Card => ({
   skill_id,
   scenarios: "",
@@ -450,7 +558,8 @@ function EnhancedSkillsPane({
     [updateError, setUpdateError] = useState(""),
     [optimizationVariant, setOptimizationVariant] = useState<SkillVariant>();
   const timer = useRef<number | undefined>(undefined),
-    runIdRef = useRef("");
+    runIdRef = useRef(""),
+    detailPanelRef = useRef<HTMLElement>(null);
   const linked = useMemo(
     () => new Set((workspaceItems ?? []).flatMap((item) => item.skill_ids)),
     [workspaceItems],
@@ -510,6 +619,9 @@ function EnhancedSkillsPane({
   useEffect(() => {
     if (!selectedKey && list.length) chooseGroup(list[0]);
   }, [list.length]);
+  useEffect(() => {
+    detailPanelRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }, [selectedKey, selectedVariantId]);
   useEffect(() => {
     let active = true;
     let unsubscribe: (() => void) | undefined;
@@ -650,7 +762,7 @@ function EnhancedSkillsPane({
           ))}
           {!list.length && <Empty text="没有匹配的 Skill。" />}
         </section>
-        <section className="detail-panel skill-group-detail">
+        <section ref={detailPanelRef} className="detail-panel skill-group-detail">
           {selected && selectedVariant ? (
             <>
               <div className="detail-title">
@@ -1097,10 +1209,14 @@ function SkillUpdateSettings({
 }
 
 function App() {
-  const [tab, setTab] = useState<Tab>("skills");
+  const [tab, setTab] = useState<Tab>("today");
   const [theme, setTheme] = useState<ThemeId>(() => getStoredTheme());
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>("overview");
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [todayProjects, setTodayProjects] = useState<TodayProject[]>(() =>
+    readTodayProjectCache(),
+  );
+  const [selectedTodayProjectId, setSelectedTodayProjectId] = useState<number>();
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<number>();
   const [detail, setDetail] = useState<WorkspaceDetail>();
   const [inboxItems, setInboxItems] = useState<KnowledgeItem[]>([]);
@@ -1136,6 +1252,8 @@ function App() {
   const [captureComposer, setCaptureComposer] = useState(false);
   const motionRoot = useRef<HTMLElement>(null);
   const pageScroll = useRef<HTMLDivElement>(null);
+  const paletteReturnFocus = useRef<HTMLElement | null>(null);
+  const workspaceReturnFocus = useRef<HTMLElement | null>(null);
   const motion = useRef<WorkbenchMotion | undefined>(undefined);
   const currentTheme =
     THEMES.find((candidate) => candidate.id === theme) ?? THEMES[0];
@@ -1151,6 +1269,23 @@ function App() {
     applyTheme(selectedTheme.id);
     persistTheme(selectedTheme.id);
     setNotice(`已应用：${selectedTheme.name} · 下次启动自动恢复`);
+  };
+
+  const loadTodayProjects = async (): Promise<boolean> => {
+    try {
+      const nextProjects = await call<TodayProject[]>("list_today_projects");
+      setTodayProjects(nextProjects);
+      localStorage.setItem(
+        "agent-workbench-today-projects",
+        JSON.stringify(nextProjects),
+      );
+      return true;
+    } catch {
+      if (!todayProjects.length) {
+        setNotice("今日项目状态暂不可用，请稍后重试。");
+      }
+      return false;
+    }
   };
 
   const load = async (preferredId?: number, syncRuns = false) => {
@@ -1217,6 +1352,7 @@ function App() {
     } else {
       setDetail(undefined);
     }
+    await loadTodayProjects();
   };
 
   useEffect(() => {
@@ -1289,6 +1425,9 @@ function App() {
     const listener = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        if (document.activeElement instanceof HTMLElement) {
+          paletteReturnFocus.current = document.activeElement;
+        }
         setPalette(true);
       }
     };
@@ -1355,13 +1494,15 @@ function App() {
         color: "violet",
       },
     });
-    await load(workspace.id);
-    setTab("workspace");
-    setNotice("工作区已创建");
+    setWorkspaces((current) => [...current.filter((item) => item.id !== workspace.id), workspace]);
+    setSelectedTodayProjectId(workspace.id);
+    setTab("today");
+    const refreshed = await loadTodayProjects();
+    setNotice(refreshed ? "项目已添加" : "项目已添加，状态暂未更新；请刷新项目状态，无需重复添加。");
   };
 
-  const createNote = async () => {
-    if (!activeWorkspaceId) {
+  const createNote = async (workspaceId = activeWorkspaceId) => {
+    if (!workspaceId) {
       setTab("settings");
       setNotice("请先创建一个工作区");
       return;
@@ -1369,10 +1510,10 @@ function App() {
     await call("create_note", {
       title: "未命名笔记",
       body: "",
-      projectId: activeWorkspaceId,
+      projectId: workspaceId,
       tags: [],
     });
-    await load(activeWorkspaceId);
+    await load(workspaceId);
     setTab("workspace");
     setWorkspaceView("knowledge");
     setNotice("已创建一条新笔记");
@@ -1672,8 +1813,8 @@ function App() {
   const selectedTask = tasks.find((task) => task.id === taskDetailId);
 
   const openCreateWorkspace = () => {
+    workspaceReturnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setPalette(false);
-    setTab("workspace");
     setWorkspaceComposer(true);
   };
   const currentTitle =
@@ -1689,7 +1830,7 @@ function App() {
         }[tab];
   const workbenchTitle =
     tab === "today"
-      ? "工作台"
+      ? "今日"
       : tab === "workspace"
       ? "项目上下文"
       : tab === "review"
@@ -1713,33 +1854,34 @@ function App() {
       <Sidebar
         tab={tab}
         setTab={setTab}
-        refreshing={syncing}
-        refresh={refresh}
       />
       <section className="workspace">
         <header className="topbar workbench-topbar">
           <div>
-            <p className="eyebrow">LOCAL SKILL WORKSPACE</p>
             <h1>{workbenchTitle}</h1>
           </div>
           <div className="top-actions">
             <button
               className="button button-ghost shortcut"
-              onClick={() => setPalette(true)}
+              aria-label="搜索项目与 Skill"
+              onClick={(event) => {
+                paletteReturnFocus.current = event.currentTarget;
+                setPalette(true);
+              }}
             >
               <Search aria-hidden="true" />
-              <span>搜索 Skill</span>
+              <span>搜索项目与 Skill</span>
               <kbd>Ctrl K</kbd>
             </button>
             <ThemeSwitcher theme={theme} selectTheme={changeTheme} />
             <button
-              className="button button-primary"
+              className="button button-secondary topbar-sync"
               disabled={syncing}
               aria-busy={syncing}
               onClick={() => void refresh()}
             >
               <RefreshCw className={syncing ? "spin" : ""} aria-hidden="true" />
-              {syncing ? "同步中…" : "同步 Skill"}
+              {syncing ? "同步中…" : "同步全部"}
             </button>
             <div className="sync-state" aria-live="polite">
               <i className={syncing || syncStatus.state === "running" ? "pulse" : ""} />
@@ -1750,19 +1892,41 @@ function App() {
         <div ref={pageScroll} className="page-scroll">
           {tab === "today" && (
             <TodayPage
-              tasks={tasks}
-              workspaces={workspaces}
-              inboxItems={inboxItems}
-              agentRuns={agentRuns}
-              createTask={createTask}
-              promoteCapture={promoteCaptureToTask}
-              updateTaskStatus={updateTaskStatus}
-              launchAgent={launchAgent}
-              openTaskDetail={(task) => setTaskDetailId(task.id)}
-              openCapture={() => setCaptureComposer(true)}
-              openInbox={() => setTab("inbox")}
-              openExecution={() => setTab("review")}
-              clearPendingSources={clearPendingSources}
+              projects={todayProjects}
+              selectedId={selectedTodayProjectId}
+              selectProject={setSelectedTodayProjectId}
+              addProject={openCreateWorkspace}
+              generateDraft={(projectId) =>
+                call<ProgressDraft>("generate_progress_draft", { projectId })
+              }
+              listVersions={(projectId) =>
+                call<ProgressVersion[]>("list_progress_versions", { projectId })
+              }
+              saveVersion={(input) =>
+                call<ProgressVersion>("save_progress_version", { input })
+              }
+              refreshProjects={loadTodayProjects}
+              configureDocuments={(projectId, paths) =>
+                call<string[]>("configure_progress_documents", { projectId, paths })
+              }
+              openProjectContext={async (projectId) => {
+                await load(projectId);
+                setTab("workspace");
+                setNotice("已打开项目上下文");
+              }}
+              createNote={(projectId) => createNote(projectId)}
+              setPinned={async (project, pinned) => {
+                try {
+                  await call("set_workspace_pinned", {
+                    id: project.id,
+                    pinned,
+                  });
+                  await loadTodayProjects();
+                  setNotice(pinned ? "项目已置顶" : "项目已取消置顶");
+                } catch (error) {
+                  setNotice(`更新置顶失败：${callErrorMessage(error)}`);
+                }
+              }}
             />
           )}
           {tab === "workspace" && (
@@ -1844,6 +2008,16 @@ function App() {
           )}
         </div>
       </section>
+      {workspaceComposer && (
+        <WorkspaceComposer
+          save={createWorkspace}
+          close={() => setWorkspaceComposer(false)}
+          returnFocus={() => {
+            if (workspaceReturnFocus.current?.isConnected) workspaceReturnFocus.current.focus();
+            else document.querySelector<HTMLElement>(".today-project-title .select-trigger, .today-empty-state .button")?.focus();
+          }}
+        />
+      )}
       {captureComposer && (
         <CaptureComposer
           workspaces={workspaces}
@@ -1866,6 +2040,12 @@ function App() {
         open={palette}
         close={() => setPalette(false)}
         skillLibrary={skillLibrary}
+        projects={todayProjects}
+        selectProject={(id) => {
+          setSelectedTodayProjectId(id);
+          setTab("today");
+        }}
+        returnFocus={() => paletteReturnFocus.current?.focus()}
         setTab={setTab}
       />
       <ConfirmDialog
@@ -1879,15 +2059,12 @@ function App() {
 function Sidebar({
   tab,
   setTab,
-  refreshing,
-  refresh,
 }: {
   tab: Tab;
   setTab: (tab: Tab) => void;
-  refreshing: boolean;
-  refresh: () => Promise<void>;
 }) {
   const nav: { id: Tab; label: string; icon: typeof Inbox }[] = [
+    { id: "today", label: "今日", icon: PanelTop },
     { id: "skills", label: "本机 Skill", icon: Sparkles },
     { id: "review", label: "调用历史", icon: History },
     { id: "settings", label: "设置", icon: Settings },
@@ -1904,11 +2081,11 @@ function Sidebar({
           <strong>Workbench</strong>
         </span>
       </div>
-      <p className="skill-shell-intro">本地 Skill 管理、调用追踪与客户端协作。</p>
-      <nav className="global-nav" aria-label="Skill 工作台导航">
+      <nav className="global-nav" aria-label="工作台导航">
         {nav.map(({ id, label, icon: Icon }) => (
           <button
-            className={tab === id ? "active border-beam" : ""}
+            className={tab === id ? "active" : ""}
+            aria-current={tab === id ? "page" : undefined}
             key={id}
             onClick={() => setTab(id)}
           >
@@ -1918,15 +2095,6 @@ function Sidebar({
         ))}
       </nav>
       <div className="sidebar-bottom">
-        <button
-          className="button button-secondary sync-button"
-          disabled={refreshing}
-          aria-busy={refreshing}
-          onClick={() => void refresh()}
-        >
-          <RefreshCw className={refreshing ? "spin" : ""} aria-hidden="true" />
-          {refreshing ? "同步中…" : "立即同步"}
-        </button>
         <p>
           LOCAL FIRST
           <br />
@@ -1934,6 +2102,81 @@ function Sidebar({
         </p>
       </div>
     </aside>
+  );
+}
+
+function WorkspaceComposer({ save, close, returnFocus }: {
+  save: (title: string, path: string) => Promise<void>;
+  close: () => void;
+  returnFocus: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [path, setPath] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [choosing, setChoosing] = useState(false);
+  const [error, setError] = useState("");
+  const submitting = useRef(false);
+  const busy = saving || choosing;
+  const chooseDirectory = async () => {
+    if (busy) return;
+    setChoosing(true);
+    setError("");
+    try {
+      const directory = await open({ directory: true, multiple: false, title: "选择项目目录" });
+      if (typeof directory === "string") {
+        setPath(directory);
+        if (!title.trim()) setTitle(directory.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "");
+      }
+    } catch {
+      setError("无法打开目录选择器，可以直接粘贴项目目录路径。");
+    } finally {
+      setChoosing(false);
+    }
+  };
+  const submit = async () => {
+    if (busy || submitting.current) return;
+    if (!title.trim() || !path.trim()) {
+      setError("请填写项目名称和目录。");
+      return;
+    }
+    submitting.current = true;
+    setSaving(true);
+    setError("");
+    try {
+      await save(title.trim(), path.trim());
+      close();
+    } catch {
+      setError("添加失败，请检查目录是否存在、是否已添加同一目录，以及访问权限。输入已保留。");
+    } finally {
+      submitting.current = false;
+      setSaving(false);
+    }
+  };
+  return (
+    <AlertDialog.Root open onOpenChange={(isOpen) => { if (!isOpen && !busy) close(); }}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="dialog-overlay" />
+        <AlertDialog.Content className="confirm-dialog workspace-composer-dialog" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }}>
+          <AlertDialog.Title>添加项目</AlertDialog.Title>
+          <AlertDialog.Description>绑定一个本地目录，项目进度版本保存在工作台，不修改项目文件。</AlertDialog.Description>
+          <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+            <label htmlFor="workspace-name">项目名称</label>
+            <input id="workspace-name" className="field-control" value={title} onChange={(event) => setTitle(event.target.value)} autoFocus required maxLength={200} disabled={busy} />
+            <label htmlFor="workspace-path">项目目录</label>
+            <input id="workspace-path" className="field-control" value={path} onChange={(event) => setPath(event.target.value)} required disabled={busy} placeholder="例如 E:\\Projects\\my-project" aria-describedby="workspace-path-hint" />
+            <button className="button button-ghost" type="button" onClick={() => void chooseDirectory()} disabled={busy} aria-busy={choosing}>
+              <FolderOpen aria-hidden="true" />{choosing ? "选择目录中…" : "选择目录"}
+            </button>
+            <p id="workspace-path-hint">可以选择目录或粘贴完整路径。Codex 与 Git 可用后，才能生成进度草稿。</p>
+            {error && <p className="workspace-form-error" role="alert">{error}</p>}
+            <div className="dialog-actions">
+              <AlertDialog.Cancel asChild><button className="button button-ghost" type="button" disabled={busy}>取消</button></AlertDialog.Cancel>
+              <button className="button button-primary" type="submit" disabled={busy} aria-busy={saving}>{saving ? "添加中…" : "添加并查看项目"}</button>
+            </div>
+          </form>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 
@@ -2057,180 +2300,599 @@ function CaptureComposer({
 }
 
 function TodayPage({
-  tasks,
-  workspaces,
-  inboxItems,
-  agentRuns,
-  createTask,
-  promoteCapture,
-  updateTaskStatus,
-  launchAgent,
-  openTaskDetail,
-  openCapture,
-  openInbox,
-  openExecution,
-  clearPendingSources,
+  projects,
+  selectedId,
+  selectProject,
+  addProject,
+  generateDraft,
+  listVersions,
+  saveVersion,
+  refreshProjects,
+  configureDocuments,
+  openProjectContext,
+  createNote,
+  setPinned,
 }: {
-  tasks: Task[];
-  workspaces: Workspace[];
-  inboxItems: KnowledgeItem[];
-  agentRuns: AgentRun[];
-  createTask: (draft: TaskDraft) => Promise<void>;
-  promoteCapture: (item: KnowledgeItem) => Promise<void>;
-  updateTaskStatus: (task: Task, status: Task["status"]) => Promise<void>;
-  launchAgent: (task: Task) => void;
-  openTaskDetail: (task: Task) => void;
-  openCapture: () => void;
-  openInbox: () => void;
-  openExecution: () => void;
-  clearPendingSources: () => void;
+  projects: TodayProject[];
+  selectedId?: number;
+  selectProject: (id: number) => void;
+  addProject: () => void;
+  generateDraft: (projectId: number) => Promise<ProgressDraft>;
+  listVersions: (projectId: number) => Promise<ProgressVersion[]>;
+  saveVersion: (input: ProgressVersionInput) => Promise<ProgressVersion>;
+  refreshProjects: () => Promise<boolean>;
+  configureDocuments: (projectId: number, paths: string[]) => Promise<string[]>;
+  openProjectContext: (projectId: number) => Promise<void>;
+  createNote: (projectId: number) => Promise<void>;
+  setPinned: (project: TodayProject, pinned: boolean) => Promise<void>;
 }) {
-  const [query, setQuery] = useState("");
-  const [composerOpen, setComposerOpen] = useState(false);
-  const visibleTasks = tasks.filter((task) =>
-    [task.title, task.objective, ...task.projects.map((project) => project.title)]
-      .join(" ")
-      .toLowerCase()
-      .includes(query.toLowerCase()),
+  const [draft, setDraft] = useState<ProgressDraft>();
+  const [draftValues, setDraftValues] = useState<ProgressDraft>();
+  const [versions, setVersions] = useState<ProgressVersion[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [actionMessage, setActionMessage] = useState("");
+  const [expandedVersionId, setExpandedVersionId] = useState<number>();
+  const [resolvedConflicts, setResolvedConflicts] = useState<EditableProgressField[]>([]);
+  const [showGitStatus, setShowGitStatus] = useState(false);
+  const selectedProject =
+    projects.find((project) => project.id === selectedId) ?? projects[0];
+  const currentProjectId = useRef(selectedProject?.id);
+  currentProjectId.current = selectedProject?.id;
+  const otherProjects = selectedProject
+    ? projects.filter((project) => project.id !== selectedProject.id).slice(0, 4)
+    : [];
+  const isReady = Boolean(
+    selectedProject &&
+      selectedProject.codex.state === "available" &&
+      selectedProject.git.state === "available",
   );
-  const activeCount = tasks.filter(
-    (task) => task.status === "ready" || task.status === "in_progress",
-  ).length;
-  const blockedCount = tasks.filter((task) => task.status === "blocked").length;
-  const completedCount = tasks.filter((task) => task.status === "done").length;
+  const unavailableReasons = selectedProject
+    ? [selectedProject.codex, selectedProject.git]
+        .filter((status) => status.state !== "available")
+        .map((status) => status.detail)
+    : [];
+  const blockerProjects = projects.filter((project) => project.blocker_count > 0);
+  const updateDraftField = (field: EditableProgressField, value: string) => {
+    setDraftValues((current) => (current ? { ...current, [field]: value } : current));
+    setResolvedConflicts((current) => Array.from(new Set([...current, field])));
+  };
+  const unresolvedConflicts = draft?.conflicts.filter((conflict) => !resolvedConflicts.includes(conflict.field)) ?? [];
+  useEffect(() => {
+    let cancelled = false;
+    setDraft(undefined);
+    setDraftValues(undefined);
+    setActionMessage("");
+    setExpandedVersionId(undefined);
+    setResolvedConflicts([]);
+    setShowGitStatus(false);
+    setVersions([]);
+    if (!selectedProject) {
+      setVersions([]);
+      return;
+    }
+    void listVersions(selectedProject.id)
+      .then((nextVersions) => { if (!cancelled) setVersions(nextVersions); })
+      .catch(() => {
+        if (!cancelled) setActionMessage("无法读取进度历史，请刷新状态重试。");
+      });
+    return () => { cancelled = true; };
+  }, [selectedProject?.id]);
+  const startDraftGeneration = async () => {
+    if (!selectedProject || !isReady || generating) return;
+    setGenerating(true);
+    setActionMessage("正在读取 Codex、Git 和项目进度文档…");
+    try {
+      const nextDraft = await withTimeout(generateDraft(selectedProject.id), 10_000);
+      if (currentProjectId.current !== selectedProject.id) return;
+      setDraft(nextDraft);
+      setDraftValues(nextDraft);
+      setResolvedConflicts([]);
+      setActionMessage("草稿已生成，请确认字段后保存为新版本。");
+    } catch {
+      if (currentProjectId.current === selectedProject.id) {
+        setActionMessage("生成失败或超过 10 秒，请检查数据源后重试；已保留缓存和当前草稿。");
+      }
+    } finally {
+      setGenerating(false);
+    }
+  };
+  const refreshToday = async () => {
+    setActionMessage("正在刷新项目状态…");
+    const refreshed = await refreshProjects();
+    setActionMessage(
+      refreshed
+        ? "项目状态已刷新；当前草稿不会被清空。"
+        : "刷新失败，已保留缓存和当前草稿；可稍后重试。",
+    );
+  };
+  const saveDraftVersion = async () => {
+    if (!draft || !draftValues || saving) return;
+    if (!isReady || unresolvedConflicts.length > 0) {
+      setActionMessage(!isReady ? "数据源不可用，请刷新状态后重试；草稿已保留。" : "请先处理新证据与确认字段的冲突。");
+      return;
+    }
+    const editableFields: EditableProgressField[] = [
+      "current_stage",
+      "last_completed",
+      "next_action",
+      "blockers",
+      "validation",
+      "workspace_changes",
+    ];
+    const confirmedFields = editableFields.filter(
+      (field) => draftValues[field] !== draft[field],
+    );
+    setSaving(true);
+    try {
+      const saved = await saveVersion({
+        project_id: draftValues.project_id,
+        current_stage: draftValues.current_stage,
+        last_completed: draftValues.last_completed,
+        next_action: draftValues.next_action,
+        blockers: draftValues.blockers,
+        validation: draftValues.validation,
+        workspace_changes: draftValues.workspace_changes,
+        source_refs: draftValues.source_refs,
+        user_confirmed_fields: Array.from(
+          new Set([...draft.preserved_fields, ...confirmedFields]),
+        ),
+        generated_at: draft.generated_at,
+      });
+      if (currentProjectId.current !== saved.project_id) return;
+      setVersions((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setDraft(undefined);
+      setDraftValues(undefined);
+      setActionMessage(`已保存进度版本 v${saved.version}。`);
+    } catch {
+      if (currentProjectId.current === draftValues.project_id) {
+        setActionMessage("保存失败，请刷新数据源状态后重试；草稿和已有版本已保留。");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div className="view today-view">
-      <section className="today-hero panel">
-        <div>
-          <span className="eyebrow">PERSONAL AI WORK OS</span>
-          <h2>今天推进什么？</h2>
-          <p>
-            先把想法变成可追踪任务，再交给合适的 Agent 执行。启动前可以检查上下文，确认后复制 Prompt 并打开工具。
-          </p>
-        </div>
-        <button className="button button-secondary" onClick={openCapture}>
-          <Plus aria-hidden="true" />
-          快速捕获
-        </button>
-        <button
-          className="button button-primary"
-          onClick={() => setComposerOpen((open) => !open)}
-        >
-          <Plus aria-hidden="true" />
-          新建任务
-        </button>
+    <div className="view today-view today-mvp-view">
+      <section className="today-page-heading">
+        <p>选择项目，生成并确认进度草稿。</p>
+        <span className="today-cache-note">
+          {!projects.length && "等待项目状态"}
+          <button className="button button-ghost today-refresh-button" onClick={() => void refreshToday()}>
+            <RefreshCw aria-hidden="true" /> 刷新项目状态
+          </button>
+          {selectedProject && <button className="button button-ghost today-refresh-button" onClick={addProject}><Plus aria-hidden="true" />添加项目</button>}
+        </span>
       </section>
-      <section className="metrics today-metrics">
-        <Metric value={activeCount} label="待推进" note="准备开始或正在执行" />
-        <Metric value={blockedCount} label="被阻塞" note="需要你做决定" />
-        <Metric value={completedCount} label="已完成" note="保留在执行历史中" />
-      </section>
-      {composerOpen && (
-        <TaskComposer
-          workspaces={workspaces}
-          createTask={async (draft) => {
-            await createTask(draft);
-            setComposerOpen(false);
-          }}
-          close={() => setComposerOpen(false)}
-        />
-      )}
-      <section className="workbench-surface-grid">
-        <article className="panel workbench-surface-card">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">CAPTURE QUEUE</span>
-              <h3>待整理来源</h3>
-            </div>
-            <div className="surface-heading-actions">
-              <span className="surface-count">{inboxItems.length}</span>
-              {inboxItems.length > 0 && (
-                <button className="text-button surface-clear-button" onClick={clearPendingSources}>
-                  清空
-                </button>
-              )}
-            </div>
-          </div>
-          {inboxItems.slice(0, 3).map((item) => (
-            <div className="surface-row" key={item.id}>
-              <Inbox aria-hidden="true" />
+
+      {!selectedProject ? (
+        <section className="panel today-empty-state">
+          <CircleDashed aria-hidden="true" />
+          <h3>还没有可用项目</h3>
+          <p>添加本地项目目录，即可查看状态、生成草稿并保存进度版本。</p>
+          <button className="button button-primary" onClick={addProject}><Plus aria-hidden="true" />添加项目</button>
+        </section>
+      ) : (
+        <>
+          <section className="panel today-progress-card">
+            <div className="today-card-heading">
               <div>
-                <b>{item.title}</b>
-                <span className="surface-meta">
-                  {captureKindLabel(item.capture_kind)} · {item.project_title || "未关联项目"}
+                <div className="today-project-title">
+                  <h2>{selectedProject.title}</h2>
+                  <SelectControl
+                    value={String(selectedProject.id)}
+                    values={projects.map((project) => String(project.id))}
+                    labels={Object.fromEntries(projects.map((project) => [String(project.id), project.title]))}
+                    displayValue="切换项目"
+                    ariaLabel="切换当前项目"
+                    onChange={(value) => selectProject(Number(value))}
+                  />
+                </div>
+                <p className="today-project-path">
+                  {selectedProject.path ?? "未绑定项目目录"}
+                </p>
+              </div>
+              <button
+                className={`button button-chip today-pin-toggle ${selectedProject.pinned ? "active" : ""}`}
+                onClick={() => void setPinned(selectedProject, !selectedProject.pinned)}
+                aria-pressed={selectedProject.pinned}
+                aria-label={selectedProject.pinned ? `取消置顶 ${selectedProject.title}` : `置顶 ${selectedProject.title}`}
+                title={selectedProject.pinned ? "取消置顶" : "置顶项目"}
+              >
+                <Star aria-hidden="true" fill={selectedProject.pinned ? "currentColor" : "none"} />
+                {selectedProject.pinned ? "已置顶" : "置顶项目"}
+              </button>
+            </div>
+            <div className="today-project-summary">
+              <div>
+                <span>当前阶段</span>
+                <strong title={selectedProject.current_stage}>{selectedProject.current_stage}</strong>
+              </div>
+              <div>
+                <span>上次完成</span>
+                <strong title={selectedProject.last_completed}>{selectedProject.last_completed}</strong>
+              </div>
+              <div>
+                <span>下一步</span>
+                <strong title={selectedProject.next_action}>{selectedProject.next_action}</strong>
+              </div>
+            </div>
+            <div className="today-readiness-row" aria-label="数据源状态">
+              <AvailabilityBadge label="Codex" status={selectedProject.codex} />
+              <AvailabilityBadge label="Git" status={selectedProject.git} />
+              <span className="today-blocker-count">阻塞任务：{selectedProject.blocker_count}</span>
+              <span className="today-updated-at">
+                最近活动：{formatDate(selectedProject.last_activity_at ?? selectedProject.updated_at)}
+              </span>
+            </div>
+            <div className="today-primary-action">
+              <div>
+                <span>
+                  {isReady
+                    ? "读取项目记录，最长等待 10 秒；生成后可编辑确认。"
+                    : unavailableReasons.join("；") || "数据源不可用，只能查看"}
                 </span>
-                <button
-                  className="surface-row-action"
-                  onClick={() => void promoteCapture(item)}
-                >
-                  生成任务
-                </button>
-                <p>{item.excerpt || "等待关联项目或生成任务"}</p>
               </div>
+              <button
+                className={`button ${draft ? "button-secondary" : "button-primary"}`}
+                disabled={!isReady || generating}
+                aria-busy={generating}
+                title={unavailableReasons.join("；")}
+                onClick={() => void startDraftGeneration()}
+              >
+                {generating ? "生成中…" : draft ? "重新生成草稿" : "生成进度草稿"}
+              </button>
             </div>
-          ))}
-          {!inboxItems.length && (
-            <p className="surface-empty">暂无待整理来源，先捕获一个想法。</p>
-          )}
-          <button className="text-button" onClick={openCapture}>
-            + 捕获新来源
-          </button>
-          <button className="text-button" onClick={openInbox}>
-            处理待整理来源
-          </button>
-        </article>
-        <article className="panel workbench-surface-card">
-          <div className="panel-heading">
-            <div>
-              <span className="eyebrow">AGENT ACTIVITY</span>
-              <h3>执行记录</h3>
-              <p className="surface-card-note">Agent 任务的启动、运行和完成状态</p>
-            </div>
-            <span className="surface-count">{agentRuns.length}</span>
-          </div>
-          {agentRuns.slice(0, 3).map((run) => (
-            <div className="surface-row" key={run.id}>
-              <History aria-hidden="true" />
+            {actionMessage && (
+              <p className="today-action-message" role="status">{actionMessage}</p>
+            )}
+            <ProgressDocumentSettings
+              key={selectedProject.id}
+              project={selectedProject}
+              busy={generating || saving}
+              configure={configureDocuments}
+              refresh={refreshProjects}
+              onConfigured={() => {
+                if (currentProjectId.current !== selectedProject.id) return;
+                setActionMessage("进度文档已更新；当前草稿和编辑已保留，重新生成后才会读取新来源。");
+              }}
+            />
+            {draft && draftValues && (
+              <ProgressDraftEditor
+                draft={draft}
+                values={draftValues}
+                saving={saving}
+                readOnly={!isReady}
+                resolvedConflicts={resolvedConflicts}
+                resolveConflict={(conflict, useSuggested) => updateDraftField(
+                  conflict.field,
+                  useSuggested ? conflict.suggested_value : conflict.confirmed_value,
+                )}
+                updateField={updateDraftField}
+                save={saveDraftVersion}
+                cancel={() => {
+                  setDraft(undefined);
+                  setDraftValues(undefined);
+                }}
+              />
+            )}
+          </section>
+
+          <section className="today-quick-actions" aria-label="快捷工作流">
+            <div className="today-section-heading">
               <div>
-                <b>{run.agent} · {run.status}</b>
-                <p>{run.workspace_path || "未绑定工作区"}</p>
+                <h3>项目操作</h3>
+              </div>
+              <span>围绕当前项目继续工作</span>
+            </div>
+            <div className="today-quick-grid">
+              <button className="today-quick-card" aria-expanded={showGitStatus} aria-controls="today-git-status" onClick={() => setShowGitStatus((shown) => !shown)}>
+                <GitBranch aria-hidden="true" />
+                <strong>查看 Git 状态</strong>
+                <span>展开最近一次读取的状态</span>
+              </button>
+              <button className="today-quick-card" onClick={() => void openProjectContext(selectedProject.id)}>
+                <Eye aria-hidden="true" />
+                <strong>查看项目上下文</strong>
+                <span>打开知识、来源和活动记录</span>
+              </button>
+              <button className="today-quick-card" onClick={() => void createNote(selectedProject.id)}>
+                <ClipboardList aria-hidden="true" />
+                <strong>记录临时事项</strong>
+                <span>创建一条工作台笔记</span>
+              </button>
+            </div>
+            {showGitStatus && (
+              <div id="today-git-status" className="today-git-status" role="status">
+                <strong>{selectedProject.git.detail}</strong>
+                <p>最近项目活动：{formatDate(selectedProject.last_activity_at ?? selectedProject.updated_at)}。这是已读取的状态，可通过“刷新项目状态”重新读取。</p>
+                <button className="button button-ghost" onClick={() => void refreshToday()}>刷新项目状态</button>
+              </div>
+            )}
+          </section>
+
+          <section className="today-support-grid">
+            <article className="panel today-projects-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>其他置顶 / 活跃项目</h3>
+                </div>
+                <span className="surface-count">{otherProjects.length}</span>
+              </div>
+              {otherProjects.map((project) => (
+                <div className="today-project-row" key={project.id}>
+                  <button
+                    className="today-project-select"
+                    onClick={() => selectProject(project.id)}
+                  >
+                    <strong>{project.title}</strong>
+                    <span>{project.current_stage} · {project.git.detail}</span>
+                  </button>
+                  <button
+                    className={`button button-chip today-pin-toggle ${project.pinned ? "active" : ""}`}
+                    onClick={() => void setPinned(project, !project.pinned)}
+                    aria-pressed={project.pinned}
+                    aria-label={project.pinned ? `取消置顶 ${project.title}` : `置顶 ${project.title}`}
+                  >
+                    <Star aria-hidden="true" fill={project.pinned ? "currentColor" : "none"} />
+                    {project.pinned ? "已置顶" : "置顶"}
+                  </button>
+                </div>
+              ))}
+              {!otherProjects.length && (
+                <p className="surface-empty">暂无其他项目。</p>
+              )}
+            </article>
+            <article className="panel today-blockers-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>阻塞与待确认</h3>
+                </div>
+                <span className="surface-count">{blockerProjects.length}</span>
+              </div>
+              {blockerProjects.map((project) => (
+                <button
+                  className="today-blocker-row"
+                  key={project.id}
+                  onClick={() => selectProject(project.id)}
+                >
+                  <strong>{project.title}</strong>
+                  <span>{project.blocker_count} 项明确阻塞 · 来源待展开</span>
+                </button>
+              ))}
+              {!blockerProjects.length && (
+                <p className="surface-empty">暂无明确阻塞。</p>
+              )}
+            </article>
+          </section>
+
+          <section className="panel today-history-panel">
+            <div className="panel-heading">
+              <div>
+                <h3>最近保存的进度版本</h3>
               </div>
             </div>
-          ))}
-          {!agentRuns.length && (
-            <p className="surface-empty">还没有执行记录，任务准备好后会出现在这里。</p>
-          )}
-          <button className="text-button" onClick={openExecution}>
-            查看执行记录 →
-          </button>
-        </article>
-      </section>
-      <div className="today-toolbar">
-        <label className="input-with-icon">
-          <Search aria-hidden="true" />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索任务或项目"
-          />
-        </label>
-        <span className="toolbar-count">{visibleTasks.length} 个任务</span>
-      </div>
-      <section className="today-task-list">
-        {visibleTasks.map((task) => (
-          <TaskCard
-            key={task.id}
-            task={task}
-            updateTaskStatus={updateTaskStatus}
-            launchAgent={launchAgent}
-            openDetails={() => openTaskDetail(task)}
-          />
-        ))}
-        {!visibleTasks.length && (
-          <Empty text="还没有任务。先记录一个想法，建立第一个行动闭环。" />
-        )}
-      </section>
+            {versions.length ? (
+              <div className="today-version-list">
+                {versions.map((version) => (
+                  <details
+                    className="today-version-row"
+                    key={version.id}
+                    open={expandedVersionId === version.id}
+                    onToggle={(event) => {
+                      if (event.currentTarget.open) setExpandedVersionId(version.id);
+                    }}
+                  >
+                    <summary>
+                      <strong>v{version.version}</strong>
+                      <span>{formatDate(version.created_at)}</span>
+                      <small>
+                        {version.user_confirmed_fields.length
+                          ? `用户确认 ${version.user_confirmed_fields.length} 项`
+                          : "自动生成"}
+                      </small>
+                    </summary>
+                    <div className="today-version-detail">
+                      <p><b>下一步：</b>{version.next_action}</p>
+                      <p><b>验证：</b>{version.validation}</p>
+                      <p><b>来源：</b>{version.source_refs.map((source) => source.label).join("、") || "无"}</p>
+                      {version.user_confirmed_fields.length > 0 && (
+                        <p><b>保护字段：</b>{version.user_confirmed_fields.join("、")}</p>
+                      )}
+                    </div>
+                  </details>
+                ))}
+              </div>
+            ) : (
+              <p className="surface-empty">尚未保存进度版本。</p>
+            )}
+          </section>
+        </>
+      )}
     </div>
+  );
+}
+
+function AvailabilityBadge({
+  label,
+  status,
+}: {
+  label: string;
+  status: ProjectAvailability;
+}) {
+  const available = status.state === "available";
+  return (
+    <span
+      className={`today-availability ${available ? "is-available" : "is-unavailable"}`}
+      title={status.detail}
+    >
+      <span aria-hidden="true">{available ? "●" : "!"}</span>
+      {label} · {available ? "可用" : "不可用"}
+    </span>
+  );
+}
+
+function ProgressDocumentSettings({
+  project,
+  busy,
+  configure,
+  refresh,
+  onConfigured,
+}: {
+  project: TodayProject;
+  busy: boolean;
+  configure: (projectId: number, paths: string[]) => Promise<string[]>;
+  refresh: () => Promise<boolean>;
+  onConfigured: () => void;
+}) {
+  const configuredPaths = (project.progress_document_paths ?? []).join("\n");
+  const [paths, setPaths] = useState(configuredPaths);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  useEffect(() => { setPaths(configuredPaths); }, [configuredPaths]);
+  const savePaths = async () => {
+    if (saving || busy) return;
+    const nextPaths = paths.split(/\r?\n/).map((path) => path.trim()).filter(Boolean);
+    if (nextPaths.length > 8) {
+      setMessage("最多配置 8 份进度文档，请减少路径后重试。");
+      return;
+    }
+    setSaving(true);
+    setMessage("");
+    try {
+      const savedPaths = await configure(project.id, nextPaths);
+      setPaths(savedPaths.join("\n"));
+      onConfigured();
+      const refreshed = await refresh();
+      setMessage(refreshed
+        ? "配置已保存，下次生成将读取这些文档。"
+        : "配置已保存，但项目状态刷新失败；请刷新后重新生成草稿。");
+    } catch {
+      setMessage("配置未保存。请使用项目内已存在、可读取的 Markdown 相对路径，禁止绝对路径或上级目录；检查后重试。");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <details className="today-document-settings">
+      <summary>进度文档来源 · {configuredPaths ? "自定义" : "自动发现"}</summary>
+      <form onSubmit={(event) => { event.preventDefault(); void savePaths(); }}>
+        <label htmlFor={`progress-documents-${project.id}`}>文档相对路径</label>
+        <textarea
+          id={`progress-documents-${project.id}`}
+          className="field-control"
+          rows={3}
+          value={paths}
+          onChange={(event) => setPaths(event.target.value)}
+          disabled={saving || busy || !project.path}
+          aria-describedby={`progress-documents-hint-${project.id}`}
+          placeholder="docs/development-progress.md"
+        />
+        <p id={`progress-documents-hint-${project.id}`}>
+          每行一份，最多 8 份，按填写顺序读取。留空并保存恢复自动发现：PROGRESS.md、docs/development-progress.md、task_plan.md、findings.md。仅保存配置，不修改项目文档。
+        </p>
+        {!project.path && <p>请先在项目上下文绑定目录。</p>}
+        <button className="button button-ghost" type="submit" disabled={saving || busy || !project.path} aria-busy={saving}>
+          {saving ? "保存配置中…" : "保存文档配置"}
+        </button>
+        {message && <p role="status">{message}</p>}
+      </form>
+    </details>
+  );
+}
+
+function ProgressDraftEditor({
+  draft,
+  values,
+  saving,
+  readOnly,
+  resolvedConflicts,
+  resolveConflict,
+  updateField,
+  save,
+  cancel,
+}: {
+  draft: ProgressDraft;
+  values: ProgressDraft;
+  saving: boolean;
+  readOnly: boolean;
+  resolvedConflicts: EditableProgressField[];
+  resolveConflict: (conflict: ProgressConflict, useSuggested: boolean) => void;
+  updateField: (field: EditableProgressField, value: string) => void;
+  save: () => Promise<void>;
+  cancel: () => void;
+}) {
+  const fields: Array<{ key: EditableProgressField; label: string }> = [
+    { key: "current_stage", label: "当前阶段" },
+    { key: "last_completed", label: "上次完成" },
+    { key: "next_action", label: "下一步" },
+    { key: "blockers", label: "阻塞" },
+    { key: "validation", label: "验证状态" },
+    { key: "workspace_changes", label: "工作区变化" },
+  ];
+  return (
+    <section className="today-draft-editor" aria-label="进度草稿预览">
+      <div className="today-draft-heading">
+        <div>
+          <h4>进度草稿</h4>
+        </div>
+        <span>生成于 {formatDate(draft.generated_at)}</span>
+      </div>
+      <div className="today-draft-fields">
+        {fields.map((field) => {
+          const conflict = draft.conflicts.find((item) => item.field === field.key);
+          const resolved = resolvedConflicts.includes(field.key);
+          return (
+          <div className="today-draft-field" key={field.key}>
+            <label htmlFor={`progress-field-${field.key}`}>{field.label}</label>
+            <textarea
+              id={`progress-field-${field.key}`}
+              className="field-control"
+              value={String(values[field.key])}
+              onChange={(event) => updateField(field.key, event.target.value)}
+              disabled={saving || readOnly}
+              aria-describedby={conflict ? `progress-conflict-${field.key}` : undefined}
+              rows={field.key === "workspace_changes" ? 2 : 3}
+            />
+            {values[field.key] !== draft[field.key] && (
+              <small>已编辑，保存后保护此字段</small>
+            )}
+            {conflict && (
+              <div className="today-field-conflict" id={`progress-conflict-${field.key}`}>
+                <strong>{resolved ? "冲突已处理" : "新证据与确认值不同"}</strong>
+                <p>确认值：{conflict.confirmed_value}</p>
+                <p>新证据：{conflict.suggested_value}</p>
+                <div className="today-conflict-actions">
+                  <button className="button button-ghost" disabled={saving || readOnly} onClick={() => resolveConflict(conflict, false)} aria-label={`${field.label}：保留确认值`}>保留确认值</button>
+                  <button className="button button-ghost" disabled={saving || readOnly} onClick={() => resolveConflict(conflict, true)} aria-label={`${field.label}：采用新证据`}>采用新证据</button>
+                </div>
+              </div>
+            )}
+          </div>
+          );
+        })}
+      </div>
+      <div className="today-draft-sources">
+        <strong>来源</strong>
+        {draft.source_refs.map((source, index) => (
+          <details key={`${source.kind}-${source.label}-${index}`}>
+            <summary>{source.kind === "document_unavailable" ? "不可读取 · " : ""}{source.label} · {formatDate(source.at)}</summary>
+            <p>{source.detail}</p>
+          </details>
+        ))}
+      </div>
+      <div className="today-draft-actions">
+        <button className="button button-ghost" onClick={cancel} disabled={saving}>
+          取消
+        </button>
+        <button className="button button-primary" onClick={() => void save()} disabled={saving || readOnly || draft.conflicts.some((conflict) => !resolvedConflicts.includes(conflict.field))} aria-busy={saving}>
+          {saving ? "保存中…" : "保存为新版本"}
+        </button>
+      </div>
+      {readOnly && <p role="status">数据源不可用，草稿仅供查看。刷新状态后可继续编辑和保存。</p>}
+      {draft.conflicts.some((conflict) => !resolvedConflicts.includes(conflict.field)) && <p role="status">请逐项处理冲突，或手动编辑对应字段，再保存新版本。</p>}
+    </section>
   );
 }
 
@@ -4827,18 +5489,20 @@ function SelectControl({
   values,
   labels,
   ariaLabel = "选择条件",
+  displayValue,
   onChange,
 }: {
   value: string;
   values: Iterable<string>;
   labels?: Record<string, string>;
   ariaLabel?: string;
+  displayValue?: string;
   onChange: (value: string) => void;
 }) {
   return (
     <Select.Root value={value} onValueChange={onChange}>
       <Select.Trigger className="select-trigger" aria-label={ariaLabel}>
-        <Select.Value>{labels?.[value] ?? value}</Select.Value>
+        <Select.Value>{displayValue ?? labels?.[value] ?? value}</Select.Value>
         <Select.Icon className="select-chevron">
           <ChevronDown aria-hidden="true" />
         </Select.Icon>
@@ -4869,11 +5533,17 @@ function CommandPalette({
   open: isOpen,
   close,
   skillLibrary,
+  projects,
+  selectProject,
+  returnFocus,
   setTab,
 }: {
   open: boolean;
   close: () => void;
   skillLibrary: SkillLibrary;
+  projects: TodayProject[];
+  selectProject: (id: number) => void;
+  returnFocus: () => void;
   setTab: (tab: Tab) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -4885,6 +5555,12 @@ function CommandPalette({
     [isOpen],
   );
   const results = [
+    ...projects.map((project) => ({
+      label: project.title,
+      detail: `项目 · ${project.path ?? "未绑定目录"}`,
+      kind: "project" as const,
+      id: project.id,
+    })),
     ...skillLibrary.groups.map((group) => ({
       label: group.name,
       detail: `Skill · ${group.variants.length} 个版本`,
@@ -4893,22 +5569,24 @@ function CommandPalette({
     })),
   ]
     .filter((result) =>
-      result.label.toLowerCase().includes(query.toLowerCase()),
+      `${result.label} ${result.detail}`.toLowerCase().includes(query.trim().toLowerCase()),
     )
     .slice(0, 8);
   return (
     <AlertDialog.Root open={isOpen} onOpenChange={(next) => !next && close()}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay forceMount className="dialog-overlay" />
-        <AlertDialog.Content forceMount className="command-palette">
+        <AlertDialog.Content forceMount className="command-palette" onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus(); }}>
+          <AlertDialog.Title>搜索项目与 Skill</AlertDialog.Title>
+          <AlertDialog.Description>选择项目回到今日页，选择 Skill 打开本机 Skill 库。</AlertDialog.Description>
           <div className="input-with-icon">
             <Search aria-hidden="true" />
             <input
               autoFocus
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              aria-label="搜索 Skill"
-              placeholder="搜索 Skill"
+              aria-label="搜索项目与 Skill"
+              placeholder="搜索项目名称、目录或 Skill"
             />
           </div>
           <div className="palette-actions">
@@ -4944,15 +5622,17 @@ function CommandPalette({
                 className="palette-action"
                 key={`${result.kind}-${result.id}`}
                 onClick={() => {
-                  setTab("skills");
+                  if (result.kind === "project") selectProject(result.id);
+                  else setTab("skills");
                   close();
                 }}
               >
-                <BookOpen aria-hidden="true" />
+                {result.kind === "project" ? <FolderOpen aria-hidden="true" /> : <BookOpen aria-hidden="true" />}
                 <span>{result.label}</span>
                 <small>{result.detail}</small>
               </button>
             ))}
+            {query.trim() && results.length === 0 && <p role="status">没有匹配的项目或 Skill，请尝试名称或目录。</p>}
           </div>
         </AlertDialog.Content>
       </AlertDialog.Portal>
@@ -5086,6 +5766,25 @@ function formatDate(value: string) {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (part: number) => String(part).padStart(2, "0");
   return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + " " + pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" + pad(date.getSeconds());
+}
+
+function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(
+      () => reject(new Error("读取证据超时，请稍后重试。")),
+      milliseconds,
+    );
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
